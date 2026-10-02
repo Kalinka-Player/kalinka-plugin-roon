@@ -29,8 +29,8 @@ jobs:
       - uses: actions/checkout@v4
         with:
           repository: Kalinka-Player/KalinkaPlayer
-          # SDK 3.7 + external playback; pin until available in a server release.
-          ref: b7c1b620b7fd252e1e5a2e7ba35d9d6b4a5cd9ab
+          # The oldest server release with SDK 3.7 (external playback).
+          ref: kalinka-v5.6.0
           path: host
       - uses: actions/setup-python@v5
         with:

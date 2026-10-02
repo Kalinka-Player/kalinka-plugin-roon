@@ -9,4 +9,4 @@ Homepage: https://github.com/Kalinka-Player/kalinka-plugin-roon
 Description: Roon Bridge endpoint integration for Kalinka
  Downloads the official platform-specific Roon Bridge on enable and displays
  Roon now-playing information with coordinated source switching.
- Requires a Kalinka server implementing the SDK 3.7 external playback API.
+ Requires Kalinka server 5.6 or newer (plugin SDK 3.7 external playback API).

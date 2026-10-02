@@ -42,7 +42,8 @@ stamps progress using its own monotonic clock; Roon positions are converted
 from seconds to milliseconds.
 
 Companion implementation: [KalinkaPlayer PR #250](https://github.com/Kalinka-Player/KalinkaPlayer/pull/250),
-initial commit `1212845eaaf6fefa3e8b30464db3a53a0009e86a`.
+initial commit `1212845eaaf6fefa3e8b30464db3a53a0009e86a`, released in
+Kalinka 5.6.0.
 
 Roon's [documented `stop` control](https://github.com/RoonLabs/node-roon-api-transport/blob/master/lib.js)
 releases the audio device immediately. The plugin's revoke callback waits

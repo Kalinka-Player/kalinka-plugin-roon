@@ -13,10 +13,9 @@ runtime; it is not included in this repository, wheels or native packages.
 ## Requirements
 
 - Linux x86-64, ARM64, or ARMv7 hard-float, with Python 3.11+.
-- Kalinka with the **external playback API**, SDK **3.7+ and <4**. Installing
-  only a newer SDK on an older server is insufficient. See the companion
-  [server change, PR #250](https://github.com/Kalinka-Player/KalinkaPlayer/pull/250);
-  the plugin refuses an unsupported server before
+- Kalinka server **5.6 or newer**, which brings the **external playback API**
+  in plugin SDK **3.7+ and <4**. Installing only a newer SDK on an older
+  server is insufficient; the plugin refuses an unsupported server before
   downloading or starting anything.
 - Node.js 18+; npm is also needed for a source/pip install. The Debian build
   bundles the official Roon extension libraries at pinned commits, with a
@@ -156,9 +155,9 @@ is additional (about 80 MiB for the Node 22 packages on our Fedora development
 machine, varying by distribution and architecture). Native packages do not
 depend on npm. Roon Bridge's own download/runtime is separate from these sizes.
 
-CI currently builds against the server/SDK commit in PR #250. Until that
-change ships in a Kalinka release, this plugin requires that development
-server. CI artifacts are experimental builds, not a stable release.
+CI tests against Kalinka 5.6.0, the first server release with SDK 3.7.
+CI artifacts from `main` are untagged development builds; install releases
+instead.
 
 To release, add a `## <version>` section to `CHANGELOG.md`, then push a
 `kalinka-plugin-roon-v<version>` tag. The version comes from that tag;
