@@ -18,7 +18,7 @@ let core;
 const roon = new RoonApi({
     extension_id: "org.kalinka-player.roon-bridge",
     display_name: "Kalinka Roon Bridge",
-    display_version: "0.1.0",
+    display_version: "0.1.1",
     publisher: "Kalinka-Player",
     email: "envelsavinds@gmail.com",
     website: "https://github.com/Kalinka-Player/kalinka-plugin-roon",

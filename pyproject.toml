@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "kalinka-plugin-roon"
-version = "0.1.0"
+version = "0.1.1"
 description = "Roon Bridge endpoint and now-playing integration for Kalinka"
 readme = "README.md"
 license = "GPL-3.0-or-later"
