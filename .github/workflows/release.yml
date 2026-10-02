@@ -1,0 +1,148 @@
+name: Release
+
+# Builds the kalinka-plugin-roon .deb and publishes it to the GitHub release
+# for a `kalinka-plugin-roon-v*` tag.
+#
+# - Triggered automatically when a `kalinka-plugin-roon-v*` tag is pushed, or
+#   manually (workflow_dispatch) against an already-existing tag — handy for
+#   publishing a release that was cut by hand.
+# - The package is architecture-independent (`_all.deb`): the Python wheel and
+#   the Node extension dependencies, which are pure JavaScript. Roon Bridge
+#   itself is downloaded per platform on the device. So a single amd64 runner
+#   builds the one artifact everyone installs.
+# - Nothing is built until the checks pass (ci.yml), for the tagged commit.
+# - The version comes from git via setuptools_scm (tag_regex in pyproject.toml),
+#   so the checkout fetches full history + tags and builds from the tagged
+#   commit — otherwise the package is labelled `…devN+g<sha>`, which
+#   scripts/build_deb.sh warns about.
+
+on:
+  push:
+    tags:
+      - 'kalinka-plugin-roon-v*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Existing kalinka-plugin-roon-v* tag to build and publish'
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  checks:
+    name: Checks
+    uses: ./.github/workflows/ci.yml
+    with:
+      ref: ${{ github.event.inputs.tag || github.ref }}
+
+  release:
+    name: Build and publish
+    needs: checks
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout (tag)
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.tag || github.ref }}
+          fetch-depth: 0   # full history + tags so setuptools_scm sees the tag
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Install build dependencies
+        run: python -m pip install --upgrade build setuptools-scm
+
+      - name: Build .deb package
+        run: PYTHON=python ./scripts/build_deb.sh
+
+      - name: Gather deb and checksum
+        run: |
+          mkdir -p release
+          cp dist/kalinka-plugin-roon_*_all.deb release/
+          (cd release && sha256sum *.deb > SHA256SUMS)
+          echo "Release assets:"
+          ls -l release/
+          cat release/SHA256SUMS
+
+      - name: Create / update release and upload
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG="${{ github.event.inputs.tag }}"
+          [ -z "$TAG" ] && TAG="${GITHUB_REF_NAME}"
+          VERSION="${TAG#kalinka-plugin-roon-v}"
+          echo "Publishing $TAG"
+
+          # The package must carry the tag's version: a tag that does not match
+          # tag_regex would otherwise publish a dev build under a release name.
+          [ -f "release/kalinka-plugin-roon_${VERSION}_all.deb" ] || {
+            echo "Built package does not match $TAG:" >&2
+            ls release/ >&2
+            exit 1
+          }
+
+          # Curated notes for this version, if CHANGELOG.md has a section for
+          # it. Missing section = install text only, plus the generated commit
+          # list below, so a release never blocks on the changelog.
+          : > notes.md
+          if [ -f CHANGELOG.md ]; then
+            awk -v want="## $VERSION" '
+              $0 == want { found = 1; next }
+              /^## / { found = 0 }
+              found
+            ' CHANGELOG.md >> notes.md
+          fi
+          if [ -s notes.md ]; then
+            printf '\n' >> notes.md
+          else
+            echo "No CHANGELOG.md section for $VERSION — publishing install notes only"
+          fi
+
+          # The SDK range the package itself declares, so the notes never
+          # disagree with what apt will check.
+          SDK=$(dpkg-deb -f release/*.deb Depends | tr ',' '\n' \
+            | sed -n 's/^ *\(kalinka-plugin-sdk .*\)$/\1/p' | paste -sd, - | sed 's/,/, /g')
+
+          cat >> notes.md <<EOF
+          ## Install
+
+          On the Kalinka machine, install or upgrade to the latest release with:
+
+          \`\`\`sh
+          curl -fsSL https://raw.githubusercontent.com/Kalinka-Player/kalinka-plugin-roon/main/scripts/install-latest.sh | sudo bash
+          \`\`\`
+
+          Or download \`kalinka-plugin-roon_${VERSION}_all.deb\`, verify it with
+          \`sha256sum -c SHA256SUMS --ignore-missing\`, and install it:
+
+          \`\`\`sh
+          sudo apt install ./kalinka-plugin-roon_${VERSION}_all.deb
+          \`\`\`
+
+          Requires \`${SDK}\`, which comes with a compatible Kalinka server.
+          EOF
+
+          # Idempotent: re-runs and builds for a hand-cut release fall through to
+          # the upload step.
+          if ! gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release create "$TAG" \
+              --repo "$GITHUB_REPOSITORY" \
+              --title "kalinka-plugin-roon $VERSION" \
+              --notes-file notes.md \
+              --generate-notes
+          fi
+          gh release upload "$TAG" release/* --clobber --repo "$GITHUB_REPOSITORY"
+          # Only the newest version is "latest", which scripts/install-latest.sh
+          # installs: a manual run against an older tag must not take it away.
+          NEWEST=$(git tag --list 'kalinka-plugin-roon-v*' --sort=-v:refname | head -n 1)
+          if [ "$TAG" = "$NEWEST" ]; then
+            gh release edit "$TAG" --latest --repo "$GITHUB_REPOSITORY"
+          else
+            echo "$TAG is not the newest tag ($NEWEST); leaving the latest release alone"
+          fi

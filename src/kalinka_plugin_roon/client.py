@@ -4,10 +4,16 @@ import asyncio
 import json
 import logging
 import os
+from importlib.metadata import PackageNotFoundError, version
 
 from .process import terminate
 
 log = logging.getLogger(__name__)
+
+try:
+    VERSION = version("kalinka-plugin-roon")
+except PackageNotFoundError:
+    VERSION = "unknown"
 
 
 class RoonClient:
@@ -25,7 +31,11 @@ class RoonClient:
             "node",
             str(self.extension / "main.js"),
             cwd=self.state_dir,
-            env={**os.environ, "ROON_OUTPUT_ID": self.output_id},
+            env={
+                **os.environ,
+                "ROON_OUTPUT_ID": self.output_id,
+                "ROON_DISPLAY_VERSION": VERSION,
+            },
             start_new_session=True,
             stdin=asyncio.subprocess.PIPE,
             stdout=asyncio.subprocess.PIPE,

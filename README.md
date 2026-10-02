@@ -47,8 +47,17 @@ hold does not cover it. See
 
 ## Setup
 
-1. Install the matching Kalinka server/SDK and this plugin, then restart
-   Kalinka. For a source checkout:
+1. Install the matching Kalinka server/SDK and this plugin. On a Kalinka
+   machine set up from `.deb` packages, install or upgrade to the latest
+   release with:
+
+   ```sh
+   curl -fsSL https://raw.githubusercontent.com/Kalinka-Player/kalinka-plugin-roon/main/scripts/install-latest.sh | sudo bash
+   ```
+
+   The script checks the `.deb` against the release's `SHA256SUMS` and
+   installs it with apt; Kalinka restarts by itself. For a source checkout,
+   install it and restart Kalinka:
 
    ```sh
    /opt/kalinka/venv/bin/pip install .
@@ -150,6 +159,11 @@ depend on npm. Roon Bridge's own download/runtime is separate from these sizes.
 CI currently builds against the server/SDK commit in PR #250. Until that
 change ships in a Kalinka release, this plugin requires that development
 server. CI artifacts are experimental builds, not a stable release.
+
+To release, add a `## <version>` section to `CHANGELOG.md`, then push a
+`kalinka-plugin-roon-v<version>` tag. The version comes from that tag;
+the release workflow runs the checks, builds the `.deb` and publishes it with
+`SHA256SUMS` to the GitHub release.
 
 Tests cover metadata, progress, artwork isolation and limits, grouping,
 transport, source takeover, late events, disconnects, process-group teardown,

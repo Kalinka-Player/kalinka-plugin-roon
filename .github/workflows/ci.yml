@@ -1,5 +1,18 @@
 name: Check and package
-on: [push, pull_request]
+
+# Runs on every pull request and on main, and before a release is built
+# (release.yml calls this workflow with the tag to test).
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_call:
+    inputs:
+      ref:
+        description: 'Commit or tag to test; the event ref when empty'
+        type: string
+        default: ''
 permissions:
   contents: read
 jobs:
@@ -10,6 +23,9 @@ jobs:
         python: ['3.11', '3.14']
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref }}
+          fetch-depth: 0   # setuptools_scm reads the version from the tags
       - uses: actions/checkout@v4
         with:
           repository: Kalinka-Player/KalinkaPlayer

@@ -10,6 +10,13 @@ test "${#wheel[@]}" -eq 1
 name="$(basename -- "${wheel[0]}")"
 version="${name#kalinka_plugin_roon-}"
 version="${version%-py3-none-any.whl}"
+case "$version" in
+    *.dev*)
+        echo "Warning: building untagged dev version $version." >&2
+        echo "For a release build, check out the release tag first:" >&2
+        echo "    git fetch --tags --force && git checkout kalinka-plugin-roon-v<X.Y.Z>" >&2
+        ;;
+esac
 pkg="$work/pkg"
 extension="$pkg/usr/libexec/kalinka-plugin-roon/extension"
 mkdir -p "$pkg/DEBIAN" "$pkg/opt/kalinka/wheels" "$extension" \

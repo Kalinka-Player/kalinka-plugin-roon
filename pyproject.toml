@@ -1,10 +1,10 @@
 [build-system]
-requires = ["setuptools>=68", "wheel"]
+requires = ["setuptools>=68", "wheel", "setuptools-scm>=8"]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "kalinka-plugin-roon"
-version = "0.1.1"
+dynamic = ["version"]
 description = "Roon Bridge endpoint and now-playing integration for Kalinka"
 readme = "README.md"
 license = "GPL-3.0-or-later"
@@ -12,7 +12,7 @@ requires-python = ">=3.11"
 dependencies = ["kalinka-plugin-sdk>=3.7,<4", "httpx>=0.24"]
 
 [project.optional-dependencies]
-dev = ["pytest>=8", "pytest-asyncio>=0.23", "ruff", "build"]
+dev = ["pytest>=8", "pytest-asyncio>=0.23", "ruff", "build", "setuptools-scm>=8"]
 
 [project.urls]
 Repository = "https://github.com/Kalinka-Player/kalinka-plugin-roon"
@@ -25,6 +25,14 @@ where = ["src"]
 
 [tool.setuptools.package-data]
 kalinka_plugin_roon = ["extension/*.js", "extension/*.json"]
+
+[tool.setuptools_scm]
+tag_regex = "^kalinka-plugin-roon-v(?P<version>\\d+\\.\\d+\\.\\d+)$"
+git_describe_command = "git describe --dirty --tags --long --match kalinka-plugin-roon-v*"
+version_scheme = "guess-next-dev"
+local_scheme = "node-and-date"
+# No fallback_version on purpose: a build that cannot read git metadata
+# must fail, not silently produce a mislabelled wheel.
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
