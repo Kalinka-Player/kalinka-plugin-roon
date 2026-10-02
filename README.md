@@ -33,13 +33,17 @@ Only the selected Roon output is coordinated; leave other outputs of the
 managed Bridge disabled in Roon. Do not run a second standalone Bridge on
 the same device.
 
-The current external-playback arbiter belongs to one Kalinka server. It stops
-that server's current source, including playback to a remote renderer; it does
-not identify the renderer sharing Bridge's physical host. A local renderer
-playing a session owned by another Kalinka server is **not** stopped by this
-plugin, and can keep the DAC busy. That topology needs arbitration at the
-renderer host; it is not covered by the server's playback hold or the handover
-delay. See [topology limits](docs/integration.md#topology-limits).
+Kalinka intentionally keeps **one active source per server**. Starting Roon
+stops that server's current source, including playback to a remote renderer.
+Starting another source on that server stops Roon. This policy applies even
+when the sources use different physical devices.
+
+The playback hold does not identify every process sharing Bridge's local DAC.
+A local renderer playing a session owned by another Kalinka server is **not**
+stopped by this plugin, and can keep the DAC busy. Supporting that topology
+would also require arbitration at the renderer host; the server's playback
+hold and handover delay do not cover it. See
+[topology limits](docs/integration.md#topology-limits).
 
 ## Setup
 

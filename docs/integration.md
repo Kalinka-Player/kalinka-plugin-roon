@@ -85,24 +85,30 @@ the selected output restarts the plugin through Kalinka's existing config flow.
 
 ## Topology limits
 
-There are two separate ownership questions: which source this server displays
-and controls, and which process holds the DAC on Bridge's host. The current
-SDK arbiter answers the first; it does not provide a host-wide audio lease.
+The intended policy is **one active source per Kalinka server**. Roon takes
+over from that server's queue or another plugin regardless of where the
+renderer runs. Starting a different source on the same server stops Roon.
+Playback to a remote renderer is intentionally stopped during this handover;
+simultaneous sources controlled by one server are outside this integration.
+
+That server-level policy is separate from physical DAC ownership. The SDK
+arbiter does not provide an audio lease across processes on Bridge's host.
 
 | Playback topology | Current behavior when Roon acquires the server hold |
 | --- | --- |
 | This server owns the local renderer's session | The session is closed and its acknowledgement is awaited. PipeWire may still need time to suspend the underlying hardware. |
-| This server plays through a remote renderer | The remote session is closed even though it does not conflict with the local DAC. |
+| This server plays through a remote renderer | The remote session is intentionally closed to preserve one active source per server. |
 | Another server owns the local renderer's session | That session is not closed. The renderer deliberately accepts close requests only from the session's owner. |
-| No local Kalinka renderer | Bridge can play locally, but this server's remote queue still follows the single-source arbitration policy. |
+| No local Kalinka renderer | Bridge can play locally; this server's remote queue follows the same single-source policy. |
 
-A distributed implementation needs an audio lease on the renderer host,
-independent of the server currently sending its stream. It must stop the local
+Supporting a local renderer owned by a different server needs an audio lease
+on the renderer host, independent of the server currently sending its stream.
+It must stop the local
 renderer and notify its owning server when Roon takes over, and await Roon's
-stop when any server starts that local renderer. It must also keep unrelated
-remote playback separate from that lease. Merely identifying a local renderer
-or sending a foreign SessionClose cannot provide those guarantees. The
-current plugin does not implement that lease, and must not claim otherwise.
+stop when any server starts that local renderer. This would complement the
+single-source policy, not allow simultaneous sources on the same server.
+Merely identifying a local renderer or sending a foreign SessionClose cannot
+provide those guarantees. The current plugin does not implement that lease.
 
 ## Diagnosing repeated device-open failures
 
