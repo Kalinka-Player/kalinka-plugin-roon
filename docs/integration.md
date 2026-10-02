@@ -83,6 +83,43 @@ the user confirms the local DAC during setup. A remote Roon output and an
 unselected second local output are outside this plugin's arbitration. Changing
 the selected output restarts the plugin through Kalinka's existing config flow.
 
+## Topology limits
+
+There are two separate ownership questions: which source this server displays
+and controls, and which process holds the DAC on Bridge's host. The current
+SDK arbiter answers the first; it does not provide a host-wide audio lease.
+
+| Playback topology | Current behavior when Roon acquires the server hold |
+| --- | --- |
+| This server owns the local renderer's session | The session is closed and its acknowledgement is awaited. PipeWire may still need time to suspend the underlying hardware. |
+| This server plays through a remote renderer | The remote session is closed even though it does not conflict with the local DAC. |
+| Another server owns the local renderer's session | That session is not closed. The renderer deliberately accepts close requests only from the session's owner. |
+| No local Kalinka renderer | Bridge can play locally, but this server's remote queue still follows the single-source arbitration policy. |
+
+A distributed implementation needs an audio lease on the renderer host,
+independent of the server currently sending its stream. It must stop the local
+renderer and notify its owning server when Roon takes over, and await Roon's
+stop when any server starts that local renderer. It must also keep unrelated
+remote playback separate from that lease. Merely identifying a local renderer
+or sending a foreign SessionClose cannot provide those guarantees. The
+current plugin does not implement that lease, and must not claim otherwise.
+
+## Diagnosing repeated device-open failures
+
+Check **Automatic audio handover** in Kalinka settings and the source-switch
+messages in the server log. A loading/playing notification without a preceding
+source-switch request uses the fallback path: Roon has already started opening
+audio, so the handover allowance cannot protect that attempt. Enable the
+extension and separately associate its source control with the chosen output
+in Roon's Device Setup. A received source-switch request is logged, followed
+by either readiness with elapsed time or failure. If readiness is logged but
+ALSA remains busy, check the configured DAC's `hw_params` and which process is
+holding it; another server's local renderer session is outside current control.
+
+The server build also matters. SDK 3.7 alone does not identify the renderer
+close-acknowledgement fix: the companion branch must include commit
+`a15c1681ab8ebd0cd2c58dc84ffa64106f1a2674` or a later descendant.
+
 ## Hardware acceptance procedure
 
 1. On x86-64, ARM64 and ARMv7hf targets enable the plugin, check download and

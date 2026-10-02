@@ -38,6 +38,10 @@ class Service:
         self.waiting_for_core = False
         self._source_wait = None
         self._source_request = None
+        self.handover_status = (
+            "Not verified: select Kalinka Roon Bridge under External Source Controls "
+            "in Roon's Device Setup"
+        )
 
     async def run(self):
         await self.client.start()
@@ -80,6 +84,9 @@ class Service:
                 )
 
     async def switch_source(self, event):
+        started = asyncio.get_running_loop().time()
+        log.info("Roon requested source switch %s", event["request_id"])
+        self.handover_status = "Roon requested the output; preparing audio"
         success = False
         acquired = None
         try:
@@ -119,6 +126,22 @@ class Service:
             )
         except (RuntimeError, OSError, asyncio.TimeoutError):
             success = False
+            log.warning("Roon did not accept source switch %s", event["request_id"])
+        elapsed = asyncio.get_running_loop().time() - started
+        if success:
+            self.handover_status = (
+                "Source control verified: automatic handover is active"
+            )
+            log.info(
+                "Roon source switch %s ready after %.2fs (%s)",
+                event["request_id"],
+                elapsed,
+                "ALSA device checked"
+                if self.hw_params and self.handover_wait_seconds
+                else f"handover allowance {self.handover_wait_seconds:g}s",
+            )
+        else:
+            self.handover_status = "Source switch failed; see the Kalinka log"
         if not success and acquired is not None and self.session is acquired:
             await self.release()
 
@@ -227,6 +250,16 @@ class Service:
             return
         self._cancel_source_wait()
         if self.session is None:
+            self.handover_status = (
+                "No pre-play source switch received: select Kalinka Roon Bridge "
+                "under External Source Controls in Roon's Device Setup"
+            )
+            log.warning(
+                "Roon started without a source-switch request; its audio device "
+                "may already be opening. The configured handover wait cannot "
+                "protect this playback-event fallback. Select Kalinka Roon Bridge "
+                "under External Source Controls in Roon's Device Setup."
+            )
             self.session = await self.playback.acquire("Roon endpoint", self)
             await self.client.set_source_selected(True)
         if not self.session.active:

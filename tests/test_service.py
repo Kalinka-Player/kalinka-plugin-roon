@@ -63,6 +63,18 @@ async def test_playback_metadata_progress_and_artwork(service):
     assert service.playback.acquire.await_count == 1
 
 
+async def test_playback_without_source_control_explains_why_wait_is_bypassed(
+    service, caplog
+):
+    service.handover_wait_seconds = 6
+    service.wait_for_output = AsyncMock()
+    await service.update([zone()])
+    service.wait_for_output.assert_not_called()
+    assert "No pre-play source switch" in service.handover_status
+    assert "handover wait cannot protect" in caplog.text
+    assert "External Source Controls" in caplog.text
+
+
 async def test_ignores_other_devices_and_follows_regrouped_output(service):
     await service.update([zone(output="someone-else")])
     service.playback.acquire.assert_not_called()
@@ -193,6 +205,7 @@ async def test_source_switch_waits_for_renderer_release_before_reply(service):
     service.client.request.assert_awaited_once_with(
         "source_reply", request_id=1, success=True
     )
+    assert "Source control verified" in service.handover_status
     # The old quiet snapshot, repeated by the source-control status update,
     # must not issue Stop while Roon is preparing to start.
     await service.update([zone("paused")])
@@ -211,6 +224,7 @@ async def test_source_switch_failure_is_reported_and_never_retried(service):
         "source_reply", request_id=1, success=False
     )
     assert service.session is None
+    assert "Source switch failed" in service.handover_status
 
 
 async def test_superseded_switch_cannot_acknowledge_success(service):

@@ -86,6 +86,9 @@ class KalinkaPluginRoon(InputModulePlugin):
         "connection_status": DynamicFieldDecl(
             section_id="", label="Roon status", widget="text"
         ),
+        "handover_status": DynamicFieldDecl(
+            section_id="", label="Automatic audio handover", widget="text"
+        ),
     }
 
     def __init__(self):
@@ -124,10 +127,16 @@ class KalinkaPluginRoon(InputModulePlugin):
         )
 
     async def resolve_dynamic_field(self, path):
-        if path != "connection_status":
+        if path not in ("connection_status", "handover_status"):
             raise KeyError(path)
         if not self.supervisor:
             return "Disabled"
+        if path == "handover_status":
+            return (
+                self.service.handover_status
+                if self.service
+                else "Waiting for the Roon extension"
+            )
         return self.supervisor.error or (
             self.service.status if self.service else self.supervisor.status
         )

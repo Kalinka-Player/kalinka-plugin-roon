@@ -33,6 +33,14 @@ Only the selected Roon output is coordinated; leave other outputs of the
 managed Bridge disabled in Roon. Do not run a second standalone Bridge on
 the same device.
 
+The current external-playback arbiter belongs to one Kalinka server. It stops
+that server's current source, including playback to a remote renderer; it does
+not identify the renderer sharing Bridge's physical host. A local renderer
+playing a session owned by another Kalinka server is **not** stopped by this
+plugin, and can keep the DAC busy. That topology needs arbitration at the
+renderer host; it is not covered by the server's playback hold or the handover
+delay. See [topology limits](docs/integration.md#topology-limits).
+
 ## Setup
 
 1. Install the matching Kalinka server/SDK and this plugin, then restart
@@ -69,6 +77,15 @@ the same device.
 7. Play to it from Roon. Kalinka shows Roon's now-playing state and supports
    pause, next, previous, and seek when Roon permits them. Stop or starting
    another Kalinka source sends Roon `stop`, which releases its audio device.
+
+**Automatic audio handover** in Kalinka settings shows whether an actual Roon
+source-switch request has been received. If it reports **No pre-play source
+switch received**, playback used the fallback path: the configured wait does
+not apply, and repeated Play attempts can still be needed. Check External
+Source Controls on the specific Roon output, not just extension authorization.
+The server log records each source-switch request and its completion time.
+Use the matching updated server as well as the plugin; an older server with
+SDK 3.7 may still return before the renderer closes its audio device.
 
 Pairing credentials are private files in `/var/lib/kalinka/roon/pairing/`.
 Disabling the plugin stops its extension and all managed Bridge processes,
