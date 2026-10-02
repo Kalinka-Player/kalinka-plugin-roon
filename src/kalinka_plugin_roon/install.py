@@ -122,7 +122,8 @@ async def install_extension(root: Path):
         )
     ).digest()
     destination = root / "extension"
-    if (destination / ".installed-lock").is_file():
+    marker = destination / ".installed-lock"
+    if marker.is_file() and (destination / "node_modules/node-roon-api").is_dir():
         if (destination / ".installed-lock").read_bytes() == lock:
             return destination
     if not shutil.which("npm"):
@@ -130,6 +131,9 @@ async def install_extension(root: Path):
             "Install Node.js 18+ and npm, or use the Debian plugin package"
         )
     destination.mkdir(parents=True, exist_ok=True)
+    # A failed upgrade must never leave an old success marker beside a
+    # partially replaced dependency tree (including after a later rollback).
+    marker.unlink(missing_ok=True)
     for item in source.iterdir():
         if item.suffix in (".json", ".js"):
             shutil.copyfile(item, destination / item.name)
@@ -140,5 +144,5 @@ async def install_extension(root: Path):
         cwd=destination,
         timeout=180,
     )
-    (destination / ".installed-lock").write_bytes(lock)
+    marker.write_bytes(lock)
     return destination

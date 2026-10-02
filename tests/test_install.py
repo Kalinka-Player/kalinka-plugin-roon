@@ -1,4 +1,5 @@
 import io
+import shutil
 import tarfile
 
 import pytest
@@ -76,3 +77,38 @@ def test_allows_official_relative_symlink(tmp_path):
     member.type, member.linkname = tarfile.SYMTYPE, "../start.sh"
     root = unpack(archive(tmp_path, member), tmp_path / "extracted")
     assert (root / "sub/start").read_bytes() == b"hello"
+
+
+async def test_extension_install_recovers_missing_dependencies_and_invalidates_failed_upgrade(
+    monkeypatch, tmp_path
+):
+    from kalinka_plugin_roon import install
+
+    source = tmp_path / "source/extension"
+    source.mkdir(parents=True)
+    for name in ("main.js", "zones.js", "package.json", "package-lock.json"):
+        (source / name).write_text("{}")
+    monkeypatch.setattr(install, "__file__", str(source.parent / "install.py"))
+    monkeypatch.setattr(install.shutil, "which", lambda _: "/usr/bin/npm")
+    calls = []
+
+    async def npm(args, *, cwd, timeout):
+        calls.append(args)
+        (cwd / "node_modules/node-roon-api").mkdir(parents=True, exist_ok=True)
+
+    monkeypatch.setattr("kalinka_plugin_roon.process.run_checked", npm)
+    destination = await install.install_extension(tmp_path / "state")
+    await install.install_extension(tmp_path / "state")
+    assert len(calls) == 1
+    shutil.rmtree(destination / "node_modules")
+    await install.install_extension(tmp_path / "state")
+    assert len(calls) == 2
+    (source / "main.js").write_text("updated helper")
+
+    async def failure(*args, **kwargs):
+        raise RuntimeError("network unavailable")
+
+    monkeypatch.setattr("kalinka_plugin_roon.process.run_checked", failure)
+    with pytest.raises(RuntimeError, match="network"):
+        await install.install_extension(tmp_path / "state")
+    assert not (destination / ".installed-lock").exists()
