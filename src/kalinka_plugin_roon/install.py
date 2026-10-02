@@ -107,7 +107,7 @@ async def install_extension(root: Path):
     if (bundled / "node_modules").is_dir() and all(
         (bundled / name).is_file()
         and (bundled / name).read_bytes() == (source / name).read_bytes()
-        for name in ("main.js", "zones.js", "source_control.js", "package-lock.json")
+        for name in ("main.js", "zones.js", "package-lock.json")
     ):
         return bundled
     import hashlib

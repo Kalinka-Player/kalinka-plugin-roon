@@ -14,7 +14,7 @@ jobs:
         with:
           repository: Kalinka-Player/KalinkaPlayer
           # SDK 3.7 + external playback; pin until available in a server release.
-          ref: a15c1681ab8ebd0cd2c58dc84ffa64106f1a2674
+          ref: b7c1b620b7fd252e1e5a2e7ba35d9d6b4a5cd9ab
           path: host
       - uses: actions/setup-python@v5
         with:

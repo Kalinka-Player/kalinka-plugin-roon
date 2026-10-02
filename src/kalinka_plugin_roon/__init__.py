@@ -43,14 +43,7 @@ class RoonConfig(ModuleConfig):
         default="",
         title="ALSA output details (optional)",
         pattern=r"^$|^/proc/asound/card[0-9]+/pcm[0-9]+p/sub[0-9]+/hw_params$",
-        description="hw_params for the DAC selected in Roon, e.g. /proc/asound/card0/pcm0p/sub0/hw_params. Reports output rate/channels and checks when the DAC is released during a source switch.",
-    )
-    handover_wait_seconds: float = Field(
-        default=6,
-        ge=0,
-        le=10,
-        title="Audio handover wait (seconds)",
-        description="Wait before Roon starts after switching from Kalinka. The default covers PipeWire's usual 5-second device suspend delay. With ALSA output details configured, proceeds as soon as that DAC closes or fails if still busy. Set to 0 for direct ALSA without a sound server. Requires Kalinka Roon Bridge selected as an external source control in Roon's Device Setup.",
+        description="hw_params for the DAC selected in Roon, e.g. /proc/asound/card0/pcm0p/sub0/hw_params. Reports output rate/channels; Roon does not expose source format.",
     )
 
 
@@ -86,9 +79,6 @@ class KalinkaPluginRoon(InputModulePlugin):
         "connection_status": DynamicFieldDecl(
             section_id="", label="Roon status", widget="text"
         ),
-        "handover_status": DynamicFieldDecl(
-            section_id="", label="Automatic audio handover", widget="text"
-        ),
     }
 
     def __init__(self):
@@ -119,7 +109,7 @@ class KalinkaPluginRoon(InputModulePlugin):
             raise KeyError(path)
         return (
             [
-                ConfigOption(value=key, label=f"{name} ({key})")
+                ConfigOption(value=key, label=name)
                 for key, name in sorted(self.service.outputs.items())
             ]
             if self.service
@@ -127,16 +117,10 @@ class KalinkaPluginRoon(InputModulePlugin):
         )
 
     async def resolve_dynamic_field(self, path):
-        if path not in ("connection_status", "handover_status"):
+        if path != "connection_status":
             raise KeyError(path)
         if not self.supervisor:
             return "Disabled"
-        if path == "handover_status":
-            return (
-                self.service.handover_status
-                if self.service
-                else "Waiting for the Roon extension"
-            )
         return self.supervisor.error or (
             self.service.status if self.service else self.supervisor.status
         )

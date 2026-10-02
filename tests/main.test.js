@@ -7,7 +7,7 @@ const path = require("node:path");
 
 function fixture(outputId = "local") {
     const messages = [], calls = [], handlers = {};
-    let descriptor, subscription, source;
+    let descriptor, subscription;
     const noop = () => {};
     class RoonApi {
         constructor(options) { descriptor = options; }
@@ -24,13 +24,6 @@ function fixture(outputId = "local") {
         "node-roon-api-transport": class Transport {},
         "node-roon-api-image": class Image {},
         "node-roon-api-status": Status,
-        "node-roon-api-source-control": class SourceControl {
-            new_device(options) {
-                source = options;
-                return {update_state: state => Object.assign(source.state, state)};
-            }
-        },
-        "./source_control": require("../src/kalinka_plugin_roon/extension/source_control"),
         "./zones": require("../src/kalinka_plugin_roon/extension/zones"),
     };
     vm.runInNewContext(fs.readFileSync(path.join(__dirname, "../src/kalinka_plugin_roon/extension/main.js"), "utf8"), {
@@ -49,7 +42,7 @@ function fixture(outputId = "local") {
     descriptor.core_paired(core);
     subscription("Subscribed", {zones: [{zone_id: "group", state: "playing", is_seek_allowed: true,
         is_pause_allowed: false, outputs: [{output_id: "remote"}, {output_id: "local"}]}]});
-    return {messages, calls, descriptor, core, subscription, source,
+    return {messages, calls, descriptor, core, subscription,
         command: message => handlers.line(JSON.stringify({id: 1, ...message}))};
 }
 
@@ -59,35 +52,6 @@ test("stop addresses the selected output, including in grouped zones", () => {
     assert.equal(f.calls[0].output.output_id, "local");
     assert.equal(f.calls[0].control, "stop");
     assert.equal(f.messages.at(-1).error, null);
-});
-
-test("source switch is acknowledged only after Kalinka grants the output", () => {
-    const f = fixture();
-    const replies = [];
-    const request = {send_complete: result => replies.push(result)};
-    f.source.convenience_switch(request);
-    const event = f.messages.at(-1);
-    assert.equal(event.event, "source_switch");
-    assert.equal(event.core_id, "core");
-    assert.deepEqual(replies, []);
-    assert.equal(f.source.state.status, "deselected");
-    f.command({method: "source_reply", request_id: event.request_id, success: true});
-    assert.deepEqual(replies, ["Success"]);
-    assert.equal(f.source.state.status, "selected");
-    f.command({method: "source_state", selected: false});
-    assert.equal(f.source.state.status, "deselected");
-});
-
-test("disconnect fails a pending switch and ignores its late success", () => {
-    const f = fixture();
-    const replies = [];
-    f.source.convenience_switch({send_complete: result => replies.push(result)});
-    const event = f.messages.at(-1);
-    f.descriptor.core_unpaired(f.core);
-    assert.deepEqual(replies, ["Failed"]);
-    f.command({method: "source_reply", request_id: event.request_id, success: true});
-    assert.match(f.messages.at(-1).error, /expired/);
-    assert.equal(f.source.state.status, "deselected");
 });
 
 test("controls refuse an unconfigured or absent output", () => {

@@ -7,7 +7,6 @@
     "node": ">=18"
   },
   "dependencies": {
-    "node-roon-api-source-control": "https://codeload.github.com/RoonLabs/node-roon-api-source-control/tar.gz/fab2ba33f2c9249a8c9e69b6dcccfc8f333ab12e",
     "node-roon-api": "https://codeload.github.com/RoonLabs/node-roon-api/tar.gz/055dae6c2ac45b6c738aa3b9e5ac1fd722ed60e8",
     "node-roon-api-transport": "https://codeload.github.com/RoonLabs/node-roon-api-transport/tar.gz/2ee60008a4cdb90c34ff3de58bb4b949067f1d20",
     "node-roon-api-image": "https://codeload.github.com/RoonLabs/node-roon-api-image/tar.gz/a5f0efaf2dfb5457e91abe326c3a40d865131d32",
