@@ -5,6 +5,7 @@ import base64
 import io
 import logging
 from collections import OrderedDict
+from pathlib import Path
 
 from kalinka_plugin_sdk.direct_playback import HoldEnded, TransportKind
 from kalinka_plugin_sdk.inputmodule import ContentInfo
@@ -15,9 +16,12 @@ log = logging.getLogger(__name__)
 
 
 class Service:
-    def __init__(self, playback, bridge, client, output_id, hw_params=""):
+    def __init__(
+        self, playback, bridge, client, output_id, hw_params="", handover_wait_seconds=6
+    ):
         self.playback, self.bridge, self.client = playback, bridge, client
         self.output_id, self.hw_params = output_id, hw_params
+        self.handover_wait_seconds = handover_wait_seconds
         self.session = None
         self.core_id = None
         self.outputs = {}
@@ -32,6 +36,8 @@ class Service:
         # A stale playing snapshot must not interrupt a newer Kalinka source.
         self._resync = True
         self.waiting_for_core = False
+        self._source_wait = None
+        self._source_request = None
 
     async def run(self):
         await self.client.start()
@@ -60,6 +66,10 @@ class Service:
                 await self.release()
             elif kind == "zones" and event.get("core_id") == self.core_id:
                 await self.update(event.get("zones", []))
+            elif kind == "source_switch":
+                await self.switch_source(event)
+            elif kind == "source_timeout":
+                await self.source_timeout(event)
             elif (
                 kind == "heartbeat"
                 and not self.waiting_for_core
@@ -68,6 +78,94 @@ class Service:
                 raise RuntimeError(
                     "Roon Bridge exited; check its dependency/startup log"
                 )
+
+    async def switch_source(self, event):
+        success = False
+        acquired = None
+        try:
+            if event.get("core_id") != self.core_id or not self.zone:
+                raise RuntimeError("Selected Roon output is unavailable")
+            if not self.bridge.running or self._stopping:
+                raise RuntimeError("Roon Bridge is not ready")
+            # This is an explicit new request from Roon, unlike a late zone
+            # snapshot. Acquire before acknowledging the convenience switch.
+            if self.session is None:
+                self.session = await self.playback.acquire("Roon endpoint", self)
+                acquired = self.session
+            if not self.session.active:
+                raise RuntimeError("Roon source switch was superseded")
+            if acquired is not None:
+                self.status = "Roon endpoint · waiting for audio device release"
+                await self.wait_for_output(acquired)
+            self.suppressed = False
+            self._resync = False
+            if acquired is not None or self.zone.get("state") not in (
+                "playing",
+                "loading",
+            ):
+                self._cancel_source_wait()
+                self._source_request = event["request_id"]
+                self._source_wait = asyncio.create_task(
+                    self._expire_source_wait(self._source_request)
+                )
+                self.status = "Roon endpoint · waiting for playback"
+                self.session.report(playback_state({**self.zone, "state": "loading"}))
+            success = True
+        except (RuntimeError, OSError, asyncio.TimeoutError, HoldEnded):
+            log.warning("Could not prepare the Roon output", exc_info=True)
+        try:
+            await self.client.request(
+                "source_reply", request_id=event["request_id"], success=success
+            )
+        except (RuntimeError, OSError, asyncio.TimeoutError):
+            success = False
+        if not success and acquired is not None and self.session is acquired:
+            await self.release()
+
+    async def wait_for_output(self, session):
+        """Let a shared sound server suspend before Roon opens raw ALSA.
+
+        Closing the renderer's PipeWire stream does not close PipeWire's own
+        hardware handle. With a known DAC, observe it instead of guessing;
+        otherwise allow the configured suspend delay without touching other
+        applications' sinks or system-wide sound configuration.
+        """
+        deadline = asyncio.get_running_loop().time() + self.handover_wait_seconds
+        while True:
+            if self.session is not session or not session.active:
+                raise HoldEnded("Roon source switch was superseded")
+            if self.handover_wait_seconds == 0:
+                return
+            if self.hw_params and Path(self.hw_params).read_text().strip() == "closed":
+                return
+            remaining = deadline - asyncio.get_running_loop().time()
+            if remaining <= 0:
+                if self.hw_params:
+                    raise TimeoutError("The selected ALSA device is still busy")
+                return
+            await asyncio.sleep(min(0.1, remaining))
+
+    def _cancel_source_wait(self):
+        if self._source_wait:
+            self._source_wait.cancel()
+            self._source_wait = None
+        self._source_request = None
+
+    async def _expire_source_wait(self, request_id):
+        await asyncio.sleep(10)
+        await self.client.events.put(
+            {"event": "source_timeout", "request_id": request_id}
+        )
+
+    async def source_timeout(self, event):
+        if self._source_request != event["request_id"]:
+            return
+        self._cancel_source_wait()
+        # A source switch without subsequent playback must not hold Kalinka
+        # indefinitely. Do not retry Play: it could undo a user's Stop/Pause.
+        log.warning("Roon source switch was not followed by playback")
+        await self.stop_audio()
+        await self.release()
 
     async def update(self, zones):
         self.outputs = {
@@ -105,6 +203,10 @@ class Service:
         state = zone.get("state")
         previous, self.previous_state = self.previous_state, state
         if state not in ("playing", "loading"):
+            if self._source_wait:
+                # Source-control updates can repeat the old paused snapshot
+                # before Roon has acted on our switch acknowledgement.
+                return
             # Pause can retain ALSA in Roon. Explicit stop releases the device.
             if self.session or (state == "paused" and previous != state):
                 await self.stop_audio()
@@ -123,8 +225,10 @@ class Service:
             return
         if not self.bridge.running:
             return
+        self._cancel_source_wait()
         if self.session is None:
             self.session = await self.playback.acquire("Roon endpoint", self)
+            await self.client.set_source_selected(True)
         if not self.session.active:
             self.session = None
             return
@@ -158,15 +262,19 @@ class Service:
             self._stopping = False
 
     async def release(self):
+        self._cancel_source_wait()
         session, self.session = self.session, None
         if session:
             await session.release()
+            await self.client.set_source_selected(False)
 
     async def on_revoked(self, reason):
         # Invalidate immediately; late playing/seek events must not take back
         # ownership. Only a quiet -> playing transition can re-arm it.
         self.session = None
         self.suppressed = True
+        self._cancel_source_wait()
+        await self.client.set_source_selected(False)
         await self.stop_audio()
 
     async def on_command(self, request):

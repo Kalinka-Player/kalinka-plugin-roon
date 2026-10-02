@@ -50,6 +50,26 @@ up to one second for its reply, and falls back to terminating the Bridge
 process group. The entire callback fits within Kalinka's three-second plugin
 budget. It does not reenter the arbiter while the host is waiting for it.
 
+For the opposite direction, the extension provides Roon's official
+[`sourcecontrol:1` service](https://github.com/RoonLabs/node-roon-api-source-control/blob/master/lib.js).
+The user associates it with the selected output in Roon's Device Setup.
+`convenience_switch` becomes a private request to Python. Python acquires the
+external hold, awaiting the old renderer's `SessionClosed` acknowledgement,
+then waits for the shared sound server to relinquish the hardware. The default
+6-second allowance covers WirePlumber's usual 5-second idle suspend; direct
+ALSA installations can set it to zero. With a configured DAC `hw_params`,
+Python polls for `closed` and fails the switch if the device remains busy at
+the deadline. Without it, the allowance cannot guarantee hardware availability.
+
+Only then does the extension respond `Success` and mark its source selected.
+Revocation or release marks it deselected so the next Roon start switches
+again. Unanswered switches expire after 15 seconds; acquired holds without
+subsequent loading/playing expire after 10 seconds. Quiet snapshots caused by
+the source-status update do not cancel a pending start. Revocation during
+the device wait invalidates the request; late replies/timeouts cannot reclaim
+the output. Playback-event fallback remains available, with its inherent
+device-open race; there are no automatic transport Play retries.
+
 The extension and Bridge share the Kalinka service cgroup. Normal plugin
 shutdown also terminates their process groups, including children that ignore
 SIGTERM. Pairing is persisted atomically with private permissions. An advisory
@@ -68,13 +88,19 @@ the selected output restarts the plugin through Kalinka's existing config flow.
 1. On x86-64, ARM64 and ARMv7hf targets enable the plugin, check download and
    startup status, and verify Bridge advertises the expected ALSA device.
 2. Authorize the extension, enable the local audio device, and select its
-   output ID in Kalinka. Verify pairing survives a service restart.
+   output ID in Kalinka. Associate **Kalinka Roon Bridge** under **External
+   Source Controls** in Roon's Device Setup. Verify pairing and this mapping
+   survive a service restart.
 3. Start Roon playback. Verify title/artist/album/artwork, duration, seek
    progress, the Roon endpoint badge, radio without a duration, and permitted
    next/previous/seek controls. Rename the zone and repeat.
 4. Alternate local queue, another Connect plugin and Roon. Verify no overlap,
    no lost queue contents, and that the DAC is released before the new source
    opens it. Include Roon start while the Kalinka renderer owns ALSA exclusively.
+   Repeat on PipeWire with its default idle suspend, including a Kalinka stop
+   immediately followed by Roon play. Compare a 6-second handover allowance
+   with a configured `hw_params` check; direct ALSA should use a zero allowance.
+   Start Kalinka during the wait and verify the pending Roon switch fails.
 5. Pause and Stop from Roon and from Kalinka. Resume in Roon. Include grouping
    and ungrouping; confirm stop intentionally affects the selected zone's group.
 6. Disconnect Roon Server during playback and kill the Node helper. Verify

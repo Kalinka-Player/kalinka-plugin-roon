@@ -8,6 +8,8 @@ const RoonApi = require("node-roon-api");
 const Transport = require("node-roon-api-transport");
 const Image = require("node-roon-api-image");
 const Status = require("node-roon-api-status");
+const SourceControl = require("node-roon-api-source-control");
+const {SourceSwitch} = require("./source_control");
 const {updateZones, selectedZone} = require("./zones");
 
 process.umask(0o077);
@@ -34,6 +36,7 @@ const roon = new RoonApi({
     core_paired: paired => {
         core = paired;
         zones.clear();
+        sourceSwitch.select(false);
         send({event: "paired", core_id: core.core_id, name: core.display_name});
         core.services.RoonApiTransport.subscribe_zones((response, message) => {
             if (core !== paired) return;
@@ -45,15 +48,28 @@ const roon = new RoonApi({
         if (core !== lost) return;
         core = undefined;
         zones.clear();
+        sourceSwitch.select(false);
         send({event: "disconnected"});
     },
 });
 const status = new Status(roon);
-roon.init_services({required_services: [Transport, Image], provided_services: [status]});
+const sourceControl = new SourceControl(roon);
+const sourceSwitch = new SourceSwitch(sourceControl, outputId, () => core,
+    () => selectedZone(zones, outputId), send);
+roon.init_services({required_services: [Transport, Image],
+    provided_services: [status, sourceControl]});
 status.set_status("Select this device's output in Kalinka settings", false);
 
 function command(message) {
     const reply = (error, body = {}) => send({id: message.id, error: error || null, ...body});
+    if (message.method === "source_reply") {
+        return reply(sourceSwitch.complete(message.request_id, message.success === true)
+            ? null : "Source switch expired");
+    }
+    if (message.method === "source_state") {
+        sourceSwitch.select(message.selected === true);
+        return reply(null);
+    }
     if (!core) return reply("Roon Server is disconnected");
     const transport = core.services.RoonApiTransport;
     if (message.method === "image") {

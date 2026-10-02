@@ -90,3 +90,9 @@ class RoonClient:
             task.cancel()
         await asyncio.gather(*self._tasks, return_exceptions=True)
         self._tasks.clear()
+
+    async def set_source_selected(self, selected):
+        try:
+            await self.request("source_state", selected=selected)
+        except (RuntimeError, OSError, asyncio.TimeoutError):
+            log.warning("Could not update Roon source selection", exc_info=True)

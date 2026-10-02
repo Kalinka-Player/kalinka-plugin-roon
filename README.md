@@ -56,7 +56,17 @@ the same device.
    output. Save/restart through Kalinka's settings flow. The choice stores the
    stable output ID, so renaming or regrouping a zone does not change it.
    Do this before starting playback; an unselected output cannot be coordinated.
-5. Play to it from Roon. Kalinka shows Roon's now-playing state and supports
+5. In Roon's **Device Setup** for that output, add **Kalinka Roon Bridge**
+   under **External Source Controls**. This lets Roon request the DAC before
+   trying to open it. The plugin acknowledges only after Kalinka's renderer
+   has confirmed its session closed and the audio handover wait has completed.
+6. For a laptop using PipeWire/PulseAudio, leave **Audio handover wait** at
+   **6 seconds** (PipeWire normally suspends idle hardware after 5 seconds).
+   For a dedicated streamer using direct ALSA, set it to **0**. If **ALSA
+   output details** identifies the exact DAC, the plugin proceeds as soon as
+   its `hw_params` reads `closed`, up to the configured wait. If that DAC
+   remains busy, the source switch fails rather than starting Roon on it.
+7. Play to it from Roon. Kalinka shows Roon's now-playing state and supports
    pause, next, previous, and seek when Roon permits them. Stop or starting
    another Kalinka source sends Roon `stop`, which releases its audio device.
 
@@ -70,7 +80,10 @@ plugin, delete its `pairing/pairing.json`, then enable and authorize again.
 
 - Audio does not pass through Kalinka's decoder. Kalinka volume and DSP
   settings do not configure Roon; configure Roon's device and volume in Roon.
-- A loading/playing event takes ownership from Kalinka's queue or another
+- The configured source control takes ownership before Roon starts audio.
+  A loading/playing event also takes ownership as a fallback when the source
+  control is not configured, but that fallback can require retrying playback.
+  Both take ownership from Kalinka's queue or another
   plugin. Queue playback, a different plugin, Stop, a renderer selection
   change, or shutdown revokes that ownership. The host waits for the plugin's
   Roon `stop` acknowledgement before completing handover. If control fails,
@@ -95,12 +108,21 @@ plugin, delete its `pairing/pairing.json`, then enable and authorize again.
   addresses are not exposed to the app. The cache is limited to 32 images,
   each at most 2 MiB, requested at 600×600.
 
-The Roon API announces playback after Roon initiates it; it provides no
-pre-open callback for an ALSA device. The plugin releases Kalinka's renderer
-on the earliest loading/playing event. Starting Roon while another source
-owns the same exclusive DAC needs hardware testing; if Roon reports a busy
-device before delivering an event, stop Kalinka playback and retry in Roon.
-No source of silent audio or dummy renderer stream is used.
+The transport subscription announces playback after Roon initiates it. Roon's
+[source-control service](https://github.com/RoonLabs/node-roon-api-source-control)
+provides the separate convenience-switch handshake used above. It must be
+associated with the correct output in Roon; the plugin cannot set that mapping
+through the public API. A successful switch without subsequent playback
+expires after 10 seconds. No automatic Play retries are sent, so an intentional
+Pause or Stop cannot be undone by a retry timer.
+
+PipeWire's [default idle-suspend timeout is 5 seconds](https://pipewire.pages.freedesktop.org/wireplumber/daemon/configuration/alsa.html).
+Closing Kalinka's stream alone does not immediately close PipeWire's hardware
+handle. The plugin waits for this without suspending other applications or
+changing the system audio configuration. Without a configured `hw_params`,
+the wait is a time allowance, not proof the DAC is free: another application,
+a longer suspend timeout, or disabled suspend can still keep it busy. Direct
+ALSA avoids that sound-server delay. No dummy renderer stream is used.
 
 ## Development and packaging
 
@@ -120,6 +142,11 @@ downloaded on first enable. No Roon installer script runs as root. Downloads
 are bounded, extracted using tar's data filter, checked for traversal and
 escaping links, and published atomically. Bridge's own supported updater is
 free to update its writable installation.
+
+The JavaScript dependencies occupy about 2.8 MiB; the system Node.js runtime
+is additional (about 80 MiB for the Node 22 packages on our Fedora development
+machine, varying by distribution and architecture). Native packages do not
+depend on npm. Roon Bridge's own download/runtime is separate from these sizes.
 
 CI currently builds against the server/SDK commit in PR #250. Until that
 change ships in a Kalinka release, this plugin requires that development

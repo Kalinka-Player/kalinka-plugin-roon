@@ -52,6 +52,7 @@ class Supervisor:
                         ),
                         self.config.output_id,
                         self.config.alsa_hw_params,
+                        self.config.handover_wait_seconds,
                     )
                     self.error = None
                     await self.service.run()

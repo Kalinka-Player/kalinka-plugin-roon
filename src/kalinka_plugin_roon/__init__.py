@@ -43,7 +43,14 @@ class RoonConfig(ModuleConfig):
         default="",
         title="ALSA output details (optional)",
         pattern=r"^$|^/proc/asound/card[0-9]+/pcm[0-9]+p/sub[0-9]+/hw_params$",
-        description="hw_params for the DAC selected in Roon, e.g. /proc/asound/card0/pcm0p/sub0/hw_params. Reports output rate/channels; Roon does not expose source format.",
+        description="hw_params for the DAC selected in Roon, e.g. /proc/asound/card0/pcm0p/sub0/hw_params. Reports output rate/channels and checks when the DAC is released during a source switch.",
+    )
+    handover_wait_seconds: float = Field(
+        default=6,
+        ge=0,
+        le=10,
+        title="Audio handover wait (seconds)",
+        description="Wait before Roon starts after switching from Kalinka. The default covers PipeWire's usual 5-second device suspend delay. With ALSA output details configured, proceeds as soon as that DAC closes or fails if still busy. Set to 0 for direct ALSA without a sound server. Requires Kalinka Roon Bridge selected as an external source control in Roon's Device Setup.",
     )
 
 

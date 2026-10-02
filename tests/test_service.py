@@ -37,9 +37,10 @@ async def service():
         request=AsyncMock(),
         start=AsyncMock(),
         close=AsyncMock(),
+        set_source_selected=AsyncMock(),
         events=asyncio.Queue(),
     )
-    service = Service(playback, bridge, client, "local")
+    service = Service(playback, bridge, client, "local", handover_wait_seconds=0)
     service.core_id = "core"
     await service.update([zone("stopped")])
     return service
@@ -170,3 +171,139 @@ async def test_shutdown_stops_even_without_active_session(service):
     service.client.request.assert_awaited_once_with("control", control="stop")
     service.bridge.stop.assert_awaited_once()
     service.client.close.assert_awaited_once()
+
+
+async def test_source_switch_waits_for_renderer_release_before_reply(service):
+    entered, closed = asyncio.Event(), asyncio.Event()
+    session = service.playback.acquire.return_value
+
+    async def acquire(*args):
+        entered.set()
+        await closed.wait()
+        return session
+
+    service.playback.acquire.side_effect = acquire
+    switching = asyncio.create_task(
+        service.switch_source({"core_id": "core", "request_id": 1})
+    )
+    await entered.wait()
+    service.client.request.assert_not_called()
+    closed.set()
+    await switching
+    service.client.request.assert_awaited_once_with(
+        "source_reply", request_id=1, success=True
+    )
+    # The old quiet snapshot, repeated by the source-control status update,
+    # must not issue Stop while Roon is preparing to start.
+    await service.update([zone("paused")])
+    session.release.assert_not_called()
+    assert service.client.request.await_count == 1
+    await service.update([zone("playing")])
+    assert service._source_wait is None
+    assert service.playback.acquire.await_count == 1
+    await service.release()
+
+
+async def test_source_switch_failure_is_reported_and_never_retried(service):
+    service.playback.acquire.side_effect = TimeoutError("renderer still busy")
+    await service.switch_source({"core_id": "core", "request_id": 1})
+    service.client.request.assert_awaited_once_with(
+        "source_reply", request_id=1, success=False
+    )
+    assert service.session is None
+
+
+async def test_superseded_switch_cannot_acknowledge_success(service):
+    service.playback.acquire.return_value.active = False
+    await service.switch_source({"core_id": "core", "request_id": 1})
+    service.client.request.assert_awaited_once_with(
+        "source_reply", request_id=1, success=False
+    )
+    assert service.session is None
+
+
+async def test_revocation_cancels_prepared_switch_and_deselects_source(service):
+    await service.switch_source({"core_id": "core", "request_id": 1})
+    await service.on_revoked(RevokeReason.QUEUE_PLAY)
+    service.client.set_source_selected.assert_awaited_with(False)
+    assert service._source_wait is None
+    await service.source_timeout({"request_id": 1})
+    assert service.suppressed
+    assert service.session is None
+    service.client.request.assert_awaited_with("control", control="stop")
+
+
+async def test_source_switch_without_playback_releases_hold(service):
+    await service.switch_source({"core_id": "core", "request_id": 1})
+    session = service.session
+    await service.source_timeout({"request_id": 1})
+    session.release.assert_awaited_once()
+    service.client.set_source_selected.assert_awaited_with(False)
+    assert service.session is None
+
+
+async def test_late_switch_timeout_cannot_stop_successful_playback(service):
+    await service.switch_source({"core_id": "core", "request_id": 1})
+    await service.update([zone()])
+    service.client.request.reset_mock()
+    await service.source_timeout({"request_id": 1})
+    service.client.request.assert_not_called()
+    assert service.session.active
+    await service.release()
+
+
+async def test_late_switch_acknowledgement_cannot_leave_an_orphaned_hold(service):
+    service.client.request.side_effect = RuntimeError("Source switch expired")
+    await service.switch_source({"core_id": "core", "request_id": 1})
+    assert service.session is None
+    service.playback.acquire.return_value.release.assert_awaited_once()
+
+
+async def test_source_switch_waits_for_pipewire_to_close_hardware(service, tmp_path):
+    path = tmp_path / "hw_params"
+    path.write_text("access: MMAP_INTERLEAVED\nrate: 48000\n")
+    service.hw_params = str(path)
+    service.handover_wait_seconds = 1
+    switching = asyncio.create_task(
+        service.switch_source({"core_id": "core", "request_id": 1})
+    )
+    while service.session is None:
+        await asyncio.sleep(0)
+    await asyncio.sleep(0)
+    service.client.request.assert_not_called()
+    path.write_text("closed\n")
+    await switching
+    service.client.request.assert_awaited_with(
+        "source_reply", request_id=1, success=True
+    )
+    await service.release()
+
+
+async def test_device_still_busy_fails_switch_instead_of_starting_roon(
+    service, tmp_path
+):
+    path = tmp_path / "hw_params"
+    path.write_text("rate: 48000\n")
+    service.hw_params = str(path)
+    service.handover_wait_seconds = 0.01
+    await service.switch_source({"core_id": "core", "request_id": 1})
+    service.client.request.assert_awaited_with(
+        "source_reply", request_id=1, success=False
+    )
+    assert service.session is None
+
+
+async def test_queue_takeover_while_waiting_for_pipewire_cancels_switch(service):
+    service.handover_wait_seconds = 1
+    switching = asyncio.create_task(
+        service.switch_source({"core_id": "core", "request_id": 1})
+    )
+    while service.session is None:
+        await asyncio.sleep(0)
+    await service.on_revoked(RevokeReason.QUEUE_PLAY)
+    await switching
+    service.client.request.assert_awaited_with(
+        "source_reply", request_id=1, success=False
+    )
+    assert service.suppressed
+    assert service.session is None
