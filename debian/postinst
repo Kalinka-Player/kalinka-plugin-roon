@@ -1,0 +1,7 @@
+#!/bin/sh
+set -e
+# The audio-group drop-in must be loaded before the server's restart trigger.
+# No downloads, package installs or second service restart occur here.
+if [ "$1" = configure ] && [ -d /run/systemd/system ]; then
+    systemctl daemon-reload
+fi

@@ -1,0 +1,9 @@
+#!/bin/sh
+set -e
+case "$1" in
+    remove|deconfigure)
+        if [ -x /opt/kalinka/venv/bin/pip ]; then
+            /opt/kalinka/venv/bin/pip uninstall -y kalinka-plugin-roon || true
+        fi
+        ;;
+esac

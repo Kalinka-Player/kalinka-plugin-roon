@@ -1,0 +1,39 @@
+name: Check and package
+on: [push, pull_request]
+permissions:
+  contents: read
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python: ['3.11', '3.14']
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+        with:
+          repository: Kalinka-Player/KalinkaPlayer
+          # SDK 3.7 + external playback; pin until available in a server release.
+          ref: 1212845eaaf6fefa3e8b30464db3a53a0009e86a
+          path: host
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - run: pip install ./host/packages/kalinka-plugin-sdk '.[dev]'
+      - run: ruff check src tests
+      - run: ruff format --check src tests
+      - run: pytest -q
+      - run: node --test tests/*.test.js
+      - run: npm ci --omit=dev --ignore-scripts --no-audit --no-fund
+        working-directory: src/kalinka_plugin_roon/extension
+      - run: python -m build
+      - if: matrix.python == '3.11'
+        run: PYTHON=python scripts/build_deb.sh
+      - if: matrix.python == '3.11'
+        uses: actions/upload-artifact@v4
+        with:
+          name: roon-plugin-experimental
+          path: dist/*
