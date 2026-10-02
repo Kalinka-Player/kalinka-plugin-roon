@@ -1,10 +1,11 @@
 import asyncio
 import sys
+from unittest.mock import Mock
 
 import pytest
 
 from kalinka_plugin_roon.client import RoonClient
-from kalinka_plugin_roon.process import run_checked, terminate
+from kalinka_plugin_roon.process import Bridge, run_checked, terminate
 
 
 async def test_client_correlates_replies_and_times_out_without_blocking_events(
@@ -74,3 +75,23 @@ async def test_check_failure_preserves_diagnostic(tmp_path):
             [sys.executable, "-c", "import sys; print('missing ALSA'); sys.exit(1)"],
             cwd=tmp_path,
         )
+
+
+async def test_concurrent_stops_wait_for_the_same_teardown(monkeypatch, tmp_path):
+    entered, finished = asyncio.Event(), asyncio.Event()
+
+    async def slow_terminate(process):
+        if process is not None:
+            entered.set()
+            await finished.wait()
+
+    monkeypatch.setattr("kalinka_plugin_roon.process.terminate", slow_terminate)
+    bridge = Bridge(tmp_path, tmp_path)
+    bridge.process = Mock()
+    first = asyncio.create_task(bridge.stop())
+    await entered.wait()
+    second = asyncio.create_task(bridge.stop())
+    await asyncio.sleep(0)
+    assert not second.done()
+    finished.set()
+    await asyncio.gather(first, second)

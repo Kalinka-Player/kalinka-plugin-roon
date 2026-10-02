@@ -14,7 +14,7 @@ jobs:
         with:
           repository: Kalinka-Player/KalinkaPlayer
           # SDK 3.7 + external playback; pin until available in a server release.
-          ref: 1212845eaaf6fefa3e8b30464db3a53a0009e86a
+          ref: 7682ba7d62d3b0a13560b65e8b7a4c03bacc0169
           path: host
       - uses: actions/setup-python@v5
         with:
@@ -26,6 +26,7 @@ jobs:
       - run: ruff check src tests
       - run: ruff format --check src tests
       - run: pytest -q
+      - run: PYTHONPATH=host/packages/kalinka-server/src pytest host/packages/kalinka-server/tests/test_external_playback.py -q
       - run: node --test tests/*.test.js
       - run: npm ci --omit=dev --ignore-scripts --no-audit --no-fund
         working-directory: src/kalinka_plugin_roon/extension

@@ -50,15 +50,20 @@ class Bridge:
         self.directory, self.data = directory, data
         self.process = None
         self._logs = None
+        self._lock = asyncio.Lock()
 
     @property
     def running(self):
         return self.process is not None and self.process.returncode is None
 
     async def start(self):
+        async with self._lock:
+            await self._start()
+
+    async def _start(self):
         if self.running:
             return
-        await self.stop()
+        await self._stop()
         self.data.mkdir(parents=True, exist_ok=True, mode=0o700)
         self.process = await asyncio.create_subprocess_exec(
             str(self.directory / "start.sh"),
@@ -75,6 +80,12 @@ class Bridge:
             log.info("Roon Bridge: %s", line.decode(errors="replace").rstrip())
 
     async def stop(self):
+        # Disconnect and playback revocation may arrive together. Every
+        # caller waits for the actual process teardown before handing over.
+        async with self._lock:
+            await self._stop()
+
+    async def _stop(self):
         process, self.process = self.process, None
         await terminate(process)
         if self._logs:
