@@ -9,6 +9,7 @@ from kalinka_plugin_sdk.direct_playback import (
     TransportRequest,
 )
 
+from kalinka_plugin_roon.client import RoonClient
 from kalinka_plugin_roon.service import Service
 
 
@@ -73,7 +74,9 @@ async def test_ignores_other_devices_and_follows_regrouped_output(service):
 async def test_takeover_stops_roon_and_late_events_cannot_reacquire(service, reason):
     await service.update([zone()])
     await service.on_revoked(reason)
-    service.client.request.assert_awaited_once_with("control", control="stop")
+    service.client.request.assert_awaited_once_with(
+        "control", control="stop", timeout=2.0
+    )
     await service.update([zone(seek_position=17)])
     assert service.playback.acquire.await_count == 1
     assert service.session is None
@@ -89,6 +92,50 @@ async def test_failed_stop_kills_bridge_before_callback_returns(service):
     service.bridge.stop.assert_awaited_once()
 
 
+@pytest.mark.parametrize(
+    "reply_delay,released", [(1.1, True), (None, True), (1.7, False)]
+)
+async def test_stop_allows_slow_acknowledgement_but_still_bounds_failure(
+    service, tmp_path, reply_delay, released
+):
+    (tmp_path / "main.js").write_text(
+        """
+const readline = require('node:readline');
+readline.createInterface({input:process.stdin}).on('line', line => {
+ const message = JSON.parse(line);
+ if (message.control === 'stop' && REPLY)
+   setTimeout(() => process.stdout.write(JSON.stringify({id:message.id}) + '\\n'), DELAY);
+});
+""".replace("REPLY", str(reply_delay is not None).lower()).replace(
+            "DELAY", str((reply_delay or 0) * 1000)
+        )
+    )
+    client = RoonClient(tmp_path, tmp_path / "state", "local")
+    await client.start()
+    service.client = client
+    params = tmp_path / "hw_params"
+    params.write_text("closed\n" if released else "rate: 44100\n")
+    service.hw_params = str(params)
+
+    async def terminate_bridge():
+        await asyncio.sleep(0.5)
+
+    service.bridge.stop.side_effect = terminate_bridge
+    try:
+        started = asyncio.get_running_loop().time()
+        await asyncio.wait_for(service.stop_audio(), 2.8)
+        elapsed = asyncio.get_running_loop().time() - started
+        if reply_delay is not None and released:
+            service.bridge.stop.assert_not_called()
+            assert elapsed >= reply_delay
+        else:
+            service.bridge.stop.assert_awaited_once()
+        assert elapsed < 2.8
+        assert not client.pending
+    finally:
+        await client.close()
+
+
 async def test_stop_acknowledgement_waits_for_actual_dac_release(service, tmp_path):
     params = tmp_path / "hw_params"
     params.write_text("rate: 44100\n")
@@ -96,7 +143,9 @@ async def test_stop_acknowledgement_waits_for_actual_dac_release(service, tmp_pa
     await service.update([zone()])
     stopping = asyncio.create_task(service.on_revoked(RevokeReason.QUEUE_PLAY))
     await asyncio.sleep(0.04)
-    service.client.request.assert_awaited_once_with("control", control="stop")
+    service.client.request.assert_awaited_once_with(
+        "control", control="stop", timeout=2.0
+    )
     assert not stopping.done()
     params.write_text("closed\n")
     await stopping
@@ -114,7 +163,9 @@ async def test_remote_stop_or_pause_sends_stop_releases_and_does_not_loop(
     await service.update([zone()])
     session = service.session
     await service.update([zone(state)])
-    service.client.request.assert_awaited_once_with("control", control="stop")
+    service.client.request.assert_awaited_once_with(
+        "control", control="stop", timeout=2.0
+    )
     session.release.assert_awaited_once()
     await service.update([zone(state)])
     assert service.client.request.await_count == 1
@@ -134,7 +185,9 @@ async def test_startup_playing_snapshot_is_stopped_not_adopted(service):
     await service.update([zone()])
     assert service.suppressed
     service.playback.acquire.assert_not_called()
-    service.client.request.assert_awaited_once_with("control", control="stop")
+    service.client.request.assert_awaited_once_with(
+        "control", control="stop", timeout=2.0
+    )
 
 
 async def test_transport_forwarding_and_no_commands_after_revoke(service):
@@ -185,7 +238,9 @@ async def test_disconnect_stops_bridge_and_releases_ownership(service):
 async def test_shutdown_stops_even_without_active_session(service):
     service.zone = zone("paused")
     await service.close()
-    service.client.request.assert_awaited_once_with("control", control="stop")
+    service.client.request.assert_awaited_once_with(
+        "control", control="stop", timeout=2.0
+    )
     service.bridge.stop.assert_awaited_once()
     service.client.close.assert_awaited_once()
 
@@ -249,7 +304,7 @@ async def test_automatic_selection_follows_roon_playback_and_retains_idle_choice
     assert service.output_id == "other-local"
     # Stop the old target before retargeting; never stop the new playback.
     assert service.client.request.await_args_list == [
-        call("control", control="stop"),
+        call("control", control="stop", timeout=2.0),
         call("select_output", output_id="other-local"),
     ]
     session.release.assert_awaited_once()
@@ -299,7 +354,7 @@ async def test_automatic_selection_keeps_startup_resync_for_active_output(servic
     service.playback.acquire.assert_not_called()
     assert service.client.request.await_args_list == [
         call("select_output", output_id="other-local"),
-        call("control", control="stop"),
+        call("control", control="stop", timeout=2.0),
     ]
 
 
@@ -349,7 +404,7 @@ async def test_confirmed_busy_handover_retries_once_without_releasing_hold(
     service.client.request.side_effect = None
     params.write_text("closed\n")
     await service.update([zone("paused")])
-    service.client.request.assert_awaited_with("control", control="stop")
+    service.client.request.assert_awaited_with("control", control="stop", timeout=2.0)
     session.release.assert_awaited_once()
 
 
@@ -360,7 +415,9 @@ async def test_pause_without_busy_evidence_is_never_retried(service):
     )
     await service.update([zone()])
     await service.update([zone("paused")])
-    service.client.request.assert_awaited_once_with("control", control="stop")
+    service.client.request.assert_awaited_once_with(
+        "control", control="stop", timeout=2.0
+    )
 
 
 async def test_ui_buffers_until_bridge_really_owns_running_hardware(
@@ -403,7 +460,9 @@ async def test_revocation_while_waiting_to_retry_never_restarts(service, monkeyp
     await service.on_revoked(RevokeReason.QUEUE_PLAY)
     resume.set()
     await retry
-    service.client.request.assert_awaited_once_with("control", control="stop")
+    service.client.request.assert_awaited_once_with(
+        "control", control="stop", timeout=2.0
+    )
     assert service.suppressed
 
 
@@ -446,4 +505,6 @@ async def test_concurrent_stops_share_cleanup_even_if_waiter_is_cancelled(servic
     assert not second.done()
     finish.set()
     await second
-    service.client.request.assert_awaited_once_with("control", control="stop")
+    service.client.request.assert_awaited_once_with(
+        "control", control="stop", timeout=2.0
+    )
