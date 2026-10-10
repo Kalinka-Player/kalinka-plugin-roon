@@ -238,20 +238,28 @@ class Service:
     async def _stop_audio(self):
         self._stopping = True
         started = asyncio.get_running_loop().time()
+        phase = "Stop acknowledgement"
         try:
-            await self.client.request("control", control="stop")
-            group = self.bridge.process.pid if self.bridge.process else None
-            if self.hw_params and not await wait_released(
-                self.hw_params, process_group=group
-            ):
-                raise RuntimeError("Roon acknowledged Stop but ALSA did not close")
+            # Leave time to terminate Bridge within the host's three-second budget.
+            async with asyncio.timeout(2.0):
+                await self.client.request("control", control="stop", timeout=2.0)
+                phase = "ALSA release"
+                group = self.bridge.process.pid if self.bridge.process else None
+                if self.hw_params and not await wait_released(
+                    self.hw_params, process_group=group
+                ):
+                    raise RuntimeError("Roon acknowledged Stop but ALSA did not close")
             log.info(
                 "Roon audio released in %.3fs",
                 asyncio.get_running_loop().time() - started,
             )
         except (RuntimeError, OSError, asyncio.TimeoutError):
             # An acknowledgement alone is not evidence of DAC release.
-            log.warning("Roon stop failed; terminating managed Bridge to free audio")
+            log.warning(
+                "Roon %s failed after %.3fs; terminating managed Bridge to free audio",
+                phase,
+                asyncio.get_running_loop().time() - started,
+            )
             await self.bridge.stop()
         finally:
             self._stopping = False
