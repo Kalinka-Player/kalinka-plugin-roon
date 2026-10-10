@@ -1,6 +1,6 @@
 import asyncio
 import base64
-from unittest.mock import AsyncMock, Mock
+from unittest.mock import AsyncMock, Mock, call
 
 import pytest
 from kalinka_plugin_sdk.direct_playback import (
@@ -32,7 +32,7 @@ def zone(state="playing", output="local", zone_id="zone-1", **now):
 async def service():
     session = Mock(active=True, release=AsyncMock())
     playback = Mock(acquire=AsyncMock(return_value=session))
-    bridge = Mock(running=True, start=AsyncMock(), stop=AsyncMock())
+    bridge = Mock(running=True, process=None, start=AsyncMock(), stop=AsyncMock())
     client = Mock(
         request=AsyncMock(),
         start=AsyncMock(),
@@ -87,6 +87,24 @@ async def test_failed_stop_kills_bridge_before_callback_returns(service):
     service.client.request.side_effect = asyncio.TimeoutError
     await service.on_revoked(RevokeReason.QUEUE_PLAY)
     service.bridge.stop.assert_awaited_once()
+
+
+async def test_stop_acknowledgement_waits_for_actual_dac_release(service, tmp_path):
+    params = tmp_path / "hw_params"
+    params.write_text("rate: 44100\n")
+    service.hw_params = str(params)
+    await service.update([zone()])
+    stopping = asyncio.create_task(service.on_revoked(RevokeReason.QUEUE_PLAY))
+    await asyncio.sleep(0.04)
+    service.client.request.assert_awaited_once_with("control", control="stop")
+    assert not stopping.done()
+    params.write_text("closed\n")
+    await stopping
+    service.bridge.stop.assert_not_called()
+    # The Stop response's subsequent paused event must not issue another Stop
+    # that could overtake a new Play from the user.
+    await service.update([zone("paused")])
+    assert service.client.request.await_count == 1
 
 
 @pytest.mark.parametrize("state", ["paused", "stopped"])
@@ -170,3 +188,262 @@ async def test_shutdown_stops_even_without_active_session(service):
     service.client.request.assert_awaited_once_with("control", control="stop")
     service.bridge.stop.assert_awaited_once()
     service.client.close.assert_awaited_once()
+
+
+async def test_automatic_selection_matches_only_local_advertised_output(service):
+    service.configured_output_id = service.output_id = ""
+    service.local_outputs = Mock(
+        discover=Mock(return_value={"local": "/proc/asound/card1/pcm0p/sub0/hw_params"})
+    )
+    await service.update(
+        [zone("stopped"), zone("playing", output="remote", zone_id="remote")]
+    )
+    assert service.output_id == "local"
+    assert service.hw_params == "/proc/asound/card1/pcm0p/sub0/hw_params"
+    service.client.request.assert_awaited_once_with("select_output", output_id="local")
+    service.playback.acquire.assert_not_called()
+    await service.update([zone()])
+    assert service.session is not None
+
+
+async def test_automatic_selection_defaults_to_first_local_and_ignores_remote(service):
+    service.configured_output_id = service.output_id = ""
+    service.local_outputs = Mock(
+        discover=Mock(return_value={"local": "", "other-local": ""})
+    )
+    await service.update([zone(output="remote")])
+    assert not service.output_id
+    local = zone("stopped")
+    other = zone("stopped", output="other-local", zone_id="other")
+    remote = zone(output="remote")
+    await service.update([remote, other, local])
+    assert service.output_id == "local"
+    service.client.request.assert_awaited_once_with("select_output", output_id="local")
+    await service.update([local, other, remote])
+    assert service.client.request.await_count == 1
+    service.playback.acquire.assert_not_called()
+
+
+async def test_automatic_selection_follows_roon_playback_and_retains_idle_choice(
+    service,
+):
+    service.configured_output_id = ""
+    service.local_outputs = Mock(
+        discover=Mock(return_value={"local": "", "other-local": ""})
+    )
+    await service.update(
+        [zone(), zone("stopped", output="other-local", zone_id="other")]
+    )
+    session = service.session
+    service.client.request.reset_mock()
+    await service.update(
+        [
+            zone("stopped"),
+            zone(
+                output="other-local",
+                zone_id="other",
+                three_line={"line1": "Other song"},
+            ),
+        ]
+    )
+    assert service.output_id == "other-local"
+    # Stop the old target before retargeting; never stop the new playback.
+    assert service.client.request.await_args_list == [
+        call("control", control="stop"),
+        call("select_output", output_id="other-local"),
+    ]
+    session.release.assert_awaited_once()
+    assert service.playback.acquire.await_count == 2
+    assert service.session.report.call_args.args[0].current_track.title == "Other song"
+    await service.update(
+        [zone("stopped"), zone("stopped", output="other-local", zone_id="other")]
+    )
+    assert service.output_id == "other-local"
+    assert service.session is None
+
+
+async def test_automatic_selection_does_not_flap_when_multiple_outputs_play(service):
+    service.configured_output_id = ""
+    service.output_id = "other-local"
+    service.local_outputs = Mock(
+        discover=Mock(return_value={"local": "", "other-local": ""})
+    )
+    other = zone(output="other-local", zone_id="other")
+    await service.update([zone(), other])
+    await service.update([other, zone()])
+    assert service.output_id == "other-local"
+    service.client.request.assert_not_called()
+    assert service.playback.acquire.await_count == 1
+
+
+async def test_automatic_selection_falls_back_when_current_output_disappears(service):
+    service.configured_output_id = ""
+    service.local_outputs = Mock(
+        discover=Mock(return_value={"local": "", "other-local": ""})
+    )
+    await service.update([zone("stopped", output="other-local", zone_id="other")])
+    assert service.output_id == "other-local"
+    service.client.request.assert_awaited_once_with(
+        "select_output", output_id="other-local"
+    )
+
+
+async def test_automatic_selection_keeps_startup_resync_for_active_output(service):
+    service.configured_output_id = service.output_id = ""
+    service._resync = True
+    service.local_outputs = Mock(
+        discover=Mock(return_value={"local": "", "other-local": ""})
+    )
+    await service.update([zone("stopped"), zone(output="other-local", zone_id="other")])
+    assert service.output_id == "other-local"
+    service.playback.acquire.assert_not_called()
+    assert service.client.request.await_args_list == [
+        call("select_output", output_id="other-local"),
+        call("control", control="stop"),
+    ]
+
+
+async def test_explicit_override_is_not_changed_by_other_local_playback(service):
+    service.local_outputs = Mock(
+        discover=Mock(return_value={"local": "", "other-local": ""})
+    )
+    await service.update([zone("stopped"), zone(output="other-local", zone_id="other")])
+    assert service.output_id == "local"
+    service.client.request.assert_not_called()
+    service.playback.acquire.assert_not_called()
+
+
+async def test_confirmed_busy_handover_retries_once_without_releasing_hold(
+    service, tmp_path, monkeypatch
+):
+    params = tmp_path / "hw_params"
+    params.write_text("closed\n")
+    service.local_outputs = Mock(
+        discover=Mock(return_value={"local": str(params)}),
+        checkpoint=Mock(return_value=(1, 0)),
+        busy_since=Mock(return_value=True),
+    )
+    await service.update([zone()])
+    session = service.session
+    monkeypatch.setattr(
+        "kalinka_plugin_roon.service.running_on_bridge",
+        lambda *args: params.read_text() != "closed\n",
+    )
+
+    async def request(method, **kwargs):
+        if method == "control":
+            assert kwargs["control"] == "play"
+            params.write_text("rate: 44100 (44100/1)\nchannels: 2\n")
+            return {}
+        assert method == "snapshot"
+        return {"zones": [zone()], "revision": 12}
+
+    service.client.request.side_effect = request
+    await service.update([zone("paused")])
+    assert service.session is session
+    assert service._ignore_revision == 12
+    assert service._retried
+    session.release.assert_not_called()
+    assert service.playback.acquire.await_count == 1
+    # A second failure is not an endless restart loop.
+    service.client.request.side_effect = None
+    params.write_text("closed\n")
+    await service.update([zone("paused")])
+    service.client.request.assert_awaited_with("control", control="stop")
+    session.release.assert_awaited_once()
+
+
+async def test_pause_without_busy_evidence_is_never_retried(service):
+    service.local_outputs = Mock(
+        discover=Mock(return_value={"local": ""}),
+        busy_since=Mock(return_value=False),
+    )
+    await service.update([zone()])
+    await service.update([zone("paused")])
+    service.client.request.assert_awaited_once_with("control", control="stop")
+
+
+async def test_ui_buffers_until_bridge_really_owns_running_hardware(
+    service, monkeypatch, tmp_path
+):
+    params = tmp_path / "hw_params"
+    params.write_text("rate: 192000\nchannels: 2\n")
+    service.hw_params = str(params)
+    running = Mock(return_value=False)
+    monkeypatch.setattr("kalinka_plugin_roon.service.running_on_bridge", running)
+    await service.update([zone()])
+    state = service.session.report.call_args.args[0]
+    assert state.state.value == "BUFFERING"
+    assert state.audio_info.output is None  # old local stream must not leak
+    params.write_text("rate: 44100\nchannels: 2\n")
+    running.return_value = True
+    await service.update([zone()])
+    state = service.session.report.call_args.args[0]
+    assert state.state.value == "PLAYING"
+    assert state.audio_info.output.sample_rate == 44100
+    assert service._retry_deadline == 0
+
+
+async def test_revocation_while_waiting_to_retry_never_restarts(service, monkeypatch):
+    service.local_outputs = Mock(
+        discover=Mock(return_value={"local": ""}),
+        busy_since=Mock(return_value=True),
+    )
+    await service.update([zone()])
+    entered, resume = asyncio.Event(), asyncio.Event()
+
+    async def wait(*args, **kwargs):
+        entered.set()
+        await resume.wait()
+        return True
+
+    monkeypatch.setattr("kalinka_plugin_roon.service.wait_released", wait)
+    retry = asyncio.create_task(service.update([zone("paused")]))
+    await entered.wait()
+    await service.on_revoked(RevokeReason.QUEUE_PLAY)
+    resume.set()
+    await retry
+    service.client.request.assert_awaited_once_with("control", control="stop")
+    assert service.suppressed
+
+
+async def test_recovery_ignores_queued_pause_older_than_fresh_snapshot(service):
+    await service.update([zone()])
+    service._ignore_revision = 12
+    service.client.events.put_nowait(
+        {"event": "zones", "core_id": "core", "revision": 11, "zones": [zone("paused")]}
+    )
+    service.client.events.put_nowait(
+        {
+            "event": "zones",
+            "core_id": "core",
+            "revision": 13,
+            "zones": [zone(seek_position=20)],
+        }
+    )
+    service.client.events.put_nowait({"event": "closed"})
+    with pytest.raises(RuntimeError, match="exited"):
+        await service.run()
+    service.client.request.assert_not_called()
+    assert service.session.report.call_args.args[0].position == 20000
+
+
+async def test_concurrent_stops_share_cleanup_even_if_waiter_is_cancelled(service):
+    entered, finish = asyncio.Event(), asyncio.Event()
+
+    async def stop(*args, **kwargs):
+        entered.set()
+        await finish.wait()
+
+    service.client.request.side_effect = stop
+    first = asyncio.create_task(service.stop_audio())
+    await entered.wait()
+    second = asyncio.create_task(service.stop_audio())
+    await asyncio.sleep(0)
+    first.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await first
+    assert not second.done()
+    finish.set()
+    await second
+    service.client.request.assert_awaited_once_with("control", control="stop")

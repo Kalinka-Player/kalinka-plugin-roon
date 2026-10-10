@@ -35,6 +35,7 @@ class RoonClient:
                 **os.environ,
                 "ROON_OUTPUT_ID": self.output_id,
                 "ROON_DISPLAY_VERSION": VERSION,
+                "ROON_CONTROL_SOCKET": str(self.state_dir / "control.sock"),
             },
             start_new_session=True,
             stdin=asyncio.subprocess.PIPE,

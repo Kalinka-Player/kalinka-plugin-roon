@@ -7,7 +7,8 @@ owns discovery, RAAT and ALSA. A small Node child uses the official
 [Roon extension API](https://github.com/RoonLabs/node-roon-api) to pair to one
 Server, subscribe to zones, retrieve artwork and control a selected output.
 The Python plugin manages both, translates state and participates in Kalinka
-playback arbitration. No RAAT reimplementation or log scraping is needed.
+playback arbitration. Audio and its protocol remain in the unmodified Bridge;
+a bounded read of its local log diagnoses the ALSA handover collision.
 
 ```mermaid
 flowchart LR
@@ -46,18 +47,24 @@ initial commit `1212845eaaf6fefa3e8b30464db3a53a0009e86a`, released in
 Kalinka 5.6.0.
 
 Roon's [documented `stop` control](https://github.com/RoonLabs/node-roon-api-transport/blob/master/lib.js)
-releases the audio device immediately. The plugin's revoke callback waits
-up to one second for its reply, and falls back to terminating the Bridge
-process group. The entire callback fits within Kalinka's three-second plugin
-budget. It does not reenter the arbiter while the host is waiting for it.
+releases the audio device, but the Core acknowledges the command before the
+Bridge finishes ALSA teardown. The revoke callback waits up to one second for
+the reply and up to 0.8 seconds for the DAC to be released by the managed process
+group. It then terminates Bridge if needed (0.5 second grace), within the host's
+three-second callback budget. Concurrent stops share the same cleanup task;
+cancelling a waiter does not cancel hardware cleanup.
 
-For the opposite direction, a loading/playing zone notification acquires the
-external hold and stops the server's previous source. Roon has already begun
-playback at that point, so its device opening can race with the renderer's
-release. The extension does not provide source control or volume control,
-wait for a DAC, or retry Play. Optional DAC `hw_params` reads report output
-information only. Stop the previous source before starting Roon, allowing
-any shared sound server to release the hardware.
+In the opposite direction, the loading/playing notification acquires the
+external hold, stopping the current Kalinka source. If Roon loses the opening
+race, the local RAAT log records `snd_pcm_open: Device or resource busy` and
+Roon returns to paused. The plugin requires fresh evidence for the exact local
+output within three seconds of acquisition before retrying Play once. It waits
+for ALSA to close first, retains the hold, and abandons recovery if revoked.
+Recovery accepts a fresh zone snapshot and ignores older queued subscription
+revisions, preventing its own paused events from undoing the successful retry.
+Once the Bridge is observed running ALSA, further pauses are ordinary pauses.
+No source-control or device-volume service is advertised. Roon may briefly
+show a device-open error while this recovery completes.
 
 The extension and Bridge share the Kalinka service cgroup. Normal plugin
 shutdown also terminates their process groups, including children that ignore
@@ -67,10 +74,31 @@ discovery/retries, installation and process startup run outside plugin setup's
 latency budget. Loss of the extension is treated as loss of control over audio:
 Bridge is stopped, ownership is released and the supervisor retries.
 
-No automatic selection by zone name is attempted. Output IDs are opaque;
-the user confirms the local DAC during setup. A remote Roon output and an
-unselected second local output are outside this plugin's arbitration. Changing
-the selected output restarts the plugin through Kalinka's existing config flow.
+## Local output identity
+
+Automatic selection reads only this managed Bridge's
+`data/RAATServer/Settings/device_*.json`. For current ALSA Bridge builds, Roon's
+output ID is `1701` followed by `UUID(unique_id).bytes_le.hex()`. This convention
+was verified against both LAN endpoints during hardware debugging. It is not a
+documented transport API guarantee: the result must match an advertised output
+exactly. Names are never used to guess locality. Multiple local candidates are
+supported without configuration: prefer a loading/playing local output, retain
+the current selection among equally eligible outputs, otherwise take the first
+by stable output ID. A changed encoding fails visibly and retains a manual
+override. Outputs on other machines are excluded from automatic selection.
+
+Each enabled Bridge audio device appears as a Roon zone. Users choose it with
+Roon's [zone picker or Transfer Zone](https://help.roonlabs.com/portal/en/kb/articles/zone).
+Selecting a zone in the Roon UI alone changes which zone that remote controls;
+starting/transferring playback is what Kalinka follows. There is no single
+Bridge-wide output selection. When several local outputs play concurrently,
+Kalinka retains the current active output; its UI represents one session.
+
+The same settings identify `hw:CARD=<id>,DEV=<n>`. Matching `/proc/asound/card*/id`
+resolves the current card number, so renumbering does not bind the plugin to a
+wrong DAC. Output measurements are shown only when ALSA's owner belongs to the
+managed Bridge process group. Source codec, source rate/depth and the full Roon
+signal path remain unavailable through the public transport API.
 
 ## Topology limits
 
@@ -101,40 +129,163 @@ provide those guarantees. The current plugin does not implement that lease.
 
 ## Removing the experimental source control
 
-The convenience-switch handshake, device-release wait and associated status
-field have been removed. The companion server also returns to its earlier
+The experimental convenience-switch handshake and its configuration have been
+removed. Device release is now verified locally without that handshake. The companion server also returns to its earlier
 session-close behavior. When updating both components, remove **Kalinka Roon
 Bridge** from the output's **External Source Controls** in Roon's Device Setup
 and restart Kalinka. Keep authorization under **Settings → Extensions** so
 metadata and transport controls continue to work. The plugin does not
 implement on-device volume control; use Roon's own output volume settings.
 
-Seamless automatic DAC handover is outside the supported behavior. A busy
-device may still require stopping the previous source and trying playback
-again. The plugin does not change PipeWire configuration or other applications'
-audio devices.
+The plugin does not change PipeWire configuration or other applications' audio
+devices. Automatic recovery is limited to its own Bridge and the source owned
+by the same Kalinka server.
+
+## Diagnostics and browsing
+
+`python scripts/roon_rpc.py --host raspberrypi.local` reads the paired Core,
+selected output and live zones over SSH and the private
+`/var/lib/kalinka/roon/pairing/control.sock`. The socket is inside the 0700 pairing
+directory; credentials never leave the device. Commands such as
+`control '{"control":"play"}'` act through the same extension as real Roon
+transport controls, without pre-stopping Kalinka.
+
+Roon provides an official [browse API](https://github.com/RoonLabs/node-roon-api-browse),
+using its authorized extension WebSocket rather than a public REST library
+endpoint. Browsing is deliberately opt-in: set `ROON_ENABLE_BROWSE=1` in the
+Kalinka service environment and reauthorize the changed extension in Roon.
+Then `scripts/roon_rpc.py browse '{"options":{"pop_all":true}}'` and
+`browse_load '{"options":{"offset":0,"count":20}}'` inspect the hierarchy.
+The default transport/image grant cannot use that extra service; a status of
+`browse_available: false` describes the extension's grant, not absence of an API
+in Roon Server. This diagnostic does not add a Roon library UI to Kalinka.
 
 ## Hardware acceptance procedure
 
 1. On x86-64, ARM64 and ARMv7hf targets enable the plugin, check download and
    startup status, and verify Bridge advertises the expected ALSA device.
-2. Authorize the extension, enable the local audio device, and select its
-   output by name in Kalinka. Verify pairing and the selected output survive a
+2. Authorize the extension, enable the desired local audio devices, and leave the
+   output override empty in Kalinka. Verify pairing and the selected output survive a
    service restart. No external source or volume control is required.
 3. Start Roon playback. Verify title/artist/album/artwork, duration, seek
    progress, the Roon endpoint badge, radio without a duration, and permitted
    next/previous/seek controls. Rename the zone and repeat.
-4. Stop the previous source and allow the DAC to become available before
-   starting Roon. Verify the queue contents survive and Kalinka displays Roon
-   playback. Starting Kalinka playback must issue Roon `stop`. Automatic
-   Kalinka-to-Roon switching is not a guarantee of device availability.
+4. Start a local file while Roon is playing, then Play in Roon while the
+   local file is still playing. Repeat without intermediate Stop commands.
+   Verify actual ALSA ownership, sustained progress, metadata, artwork and the
+   browser stream-info dialog at every stage. Preserve Kalinka queue contents.
 5. Pause and Stop from Roon and from Kalinka. Resume in Roon. Include grouping
    and ungrouping; confirm stop intentionally affects the selected zone's group.
 6. Disconnect Roon Server during playback and kill the Node helper. Verify
    silence, released Kalinka ownership, process cleanup, retry status and
    pairing recovery. Delayed playing events must not steal a later source.
 7. Disable the plugin during playback and verify no managed Roon process remains.
-8. For optional hardware details, select the correct `hw_params` and compare
-   rate/channels to ALSA and Roon's own signal path. Source format stays unknown.
+8. Compare automatically detected output rate/channels to ALSA and Roon's own
+   signal path. Source format stays unknown, and the previous source's codec
+   must not remain in the UI.
 
 Automated tests and package builds do not replace these hardware checks.
+
+Run the hardware/browser test explicitly (it plays audio and leaves playback
+stopped). Choose a playable existing local track ID from `/browse/kalinka:localfiles:catalog:tracks`:
+
+```sh
+.venv/bin/pip install playwright
+.venv/bin/playwright install chromium
+.venv/bin/python scripts/e2e.py --host raspberrypi.local \
+  --url http://raspberrypi.local:8000 --cycles 10 \
+  --local-track kalinka:localfiles:track:YOUR_TRACK \
+  --artifacts artifacts/e2e
+```
+
+The output override must be empty. The existing Roon queue must be playable (the
+test can recover its previous queue from history after a Bridge restart). The
+test appends one local track and removes it afterwards; it does not clear the
+saved queue. Artifacts contain timestamped API/WebSocket state, physical ALSA
+owner and parameters, screenshots, and accessible UI text. Journals identify
+handover, collision, retry and teardown times. Tests are intentionally separate
+from unit tests because they require real hardware and authorization.
+
+## Verified on raspberrypi.local, 2026-10-10
+
+The installed development build passed **20 consecutive Roon → local file →
+Roon cycles**, in two ten-cycle runs. The second run followed a Kalinka service
+restart. Both output and ALSA overrides were empty throughout. This is hardware
+and browser validation of this topology, not a listening test or a guarantee
+for every Roon output/platform.
+
+| Component | Tested installation |
+| --- | --- |
+| Roon Server | Linux x86-64, 2.73 build 1700 |
+| Endpoint | `raspberrypi.local`, native ALSA, HiFiBerry Digi |
+| Kalinka server / renderer | 5.8.0 / 0.8.0 |
+| Roon plugin | `0.1.2.dev0+g9893c7d.d20261010` |
+| MusicCast plugin | `5.8.1~dev20+gd229e887.d20261010`, with startup fix below |
+| Web UI | 0.18.0+28, with stream-state fixes below |
+
+The test verifies advancing playback, the real ALSA owner executable and
+RUNNING state, Roon title/artist/album against the transport snapshot, fetched
+JPEG artwork, and Chromium's now-playing and stream-info UI. Roon output was
+44.1 kHz stereo; the local FLAC output was 192 kHz stereo. Roon no longer retains
+the local source's FLAC/24-bit details or queue index. Its unavailable source
+format remains unknown. The restart run also passed seek to 30 seconds,
+pause with DAC release, no unwanted retry of that pause, and resume.
+
+The restart journal records ten detected ALSA collisions and ten successful
+automatic recoveries. Roon-to-local release took 0.121–0.490 seconds in those
+ten cycles. Returning to Roon can involve a short gap and a transient Roon
+device-open error before the single retry succeeds. The trace captures this
+recovery instead of pre-stopping local playback to avoid the race.
+
+Evidence is retained locally under ignored artifact directories:
+
+- `artifacts/final-ten-cycles/trace.jsonl`: first ten-cycle pass.
+- `artifacts/restart-ten-cycles/trace.jsonl`: restart pass, control checks and
+  exact saved-queue ID/order comparison (100 tracks preserved).
+- `artifacts/restart-ten-cycles/kalinka-journal.txt` and `raat-tail.txt`:
+  timestamped arbitration and RAAT diagnostics.
+- Both directories contain main-screen and stream-info screenshots plus
+  accessible UI text for every source transition.
+
+Companion changes were necessary and are installed on the Pi:
+
+- [KalinkaAI PR #108](https://github.com/Kalinka-Player/KalinkaAI/pull/108):
+  replace nullable stream details on source changes, show external stream info
+  even with an empty saved queue, and hide the saved-queue index during Roon.
+- [KalinkaPlayer PR #314](https://github.com/Kalinka-Player/KalinkaPlayer/pull/314):
+  MusicCast's initial standby discovery must not
+  emit a new power-off transition that stops first playback. A power-on request
+  arriving before discovery is applied when the device becomes ready.
+
+Final review validation passed 63 plugin Python tests, 8 Node tests, all 1,087
+Flutter tests and 45 MusicCast tests. Plugin lint/format checks, Flutter analysis
+and the host repository's lint checks passed. Package/web builds also passed
+during hardware deployment. Raw hardware artifacts remain local and are not
+included in the repository.
+
+Final device state: both Kalinka services active, playback stopped, ALSA closed,
+automatic output selected, and the 100-track saved queue intact. The unrelated
+SMSL zone remained paused at its original 293-second position. The Pi's original
+plugin files, config and web bundle are backed up under
+`/var/lib/kalinka/roon/debug-backup/`.
+
+The existing transport/image authorization was retained. The optional browse
+service is implemented but was not exercised with an expanded authorization;
+`browse_available` therefore remains false. No additional authorization is
+needed for the tested switching and status features. Grouped outputs, other
+platforms, a renderer owned by another Kalinka server, and browsing with the
+extra grant were not part of these two hardware runs.
+
+Automatic-selection regression tests cover a stable first default, following playback
+to another local output, retaining the idle choice, simultaneous local playback
+without oscillation, output removal, remote-output exclusion, explicit overrides
+and startup resynchronization. Multiple local outputs are simulated in these
+tests; the Pi currently advertises one enabled local output.
+All 63 Python tests passed. The updated package was installed on the Pi and
+passed three more hardware/browser Roon → local → Roon cycles after restart,
+including seek, pause, resume and preservation of all 100 queue entries.
+Evidence is under `artifacts/multiple-output-default/`.
+The final review run passed one additional cycle plus seek/pause/resume, with
+the harness recording success only after queue preservation and cleanup.
+Its evidence is under `artifacts/pr-review-final/`, bringing the recorded
+successful cycles across these runs to 24.

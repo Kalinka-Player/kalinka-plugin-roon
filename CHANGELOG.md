@@ -2,6 +2,13 @@
 
 Curated, user-facing notes per release. Add a `## <version>` section before tagging — the release workflow puts the matching section into the GitHub Release body.
 
+## Unreleased
+
+- Detect the managed Bridge's local ALSA outputs and output rate automatically; follow active local playback and use a stable first output by default, even with multiple outputs enabled. Manual selection is an advanced override.
+- Wait for actual ALSA release after Roon acknowledges Stop. Recover one confirmed device-busy collision when switching back from local playback, without retrying ordinary pauses.
+- Report buffering until the managed Bridge actually runs the DAC, and avoid showing the previous source's output format during handover.
+- Add a private diagnostic socket and a hardware/browser E2E test for repeated Roon → local file → Roon switching, metadata, artwork, progress and ALSA ownership.
+
 ## 0.1.1
 
 First release.

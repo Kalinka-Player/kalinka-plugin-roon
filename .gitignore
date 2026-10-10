@@ -9,3 +9,4 @@ dist/
 node_modules/
 *.deb
 config.json
+artifacts/
