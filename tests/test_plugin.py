@@ -24,7 +24,8 @@ async def test_discovered_output_options_are_stable_ids():
     plugin = KalinkaPluginRoon()
     plugin.supervisor = Mock(service=Mock(outputs={"stable-id": "Renamed output"}))
     options = await plugin.resolve_options("output_id")
-    assert options[0].value == "stable-id"
-    assert "Renamed output" in options[0].label
+    assert options[0].value == ""
+    assert options[1].value == "stable-id"
+    assert "Renamed output" in options[1].label
     with pytest.raises(KeyError):
         await plugin.resolve_options("unknown")

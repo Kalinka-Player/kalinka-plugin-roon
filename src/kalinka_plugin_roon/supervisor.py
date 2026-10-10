@@ -4,6 +4,7 @@ import logging
 
 from .client import RoonClient
 from .install import install_bridge, install_extension
+from .local import LocalOutputs
 from .process import Bridge, run_checked
 from .service import Service
 
@@ -52,6 +53,7 @@ class Supervisor:
                         ),
                         self.config.output_id,
                         self.config.alsa_hw_params,
+                        LocalOutputs(self.directory / "data"),
                     )
                     self.error = None
                     await self.service.run()

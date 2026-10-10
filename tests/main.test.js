@@ -23,6 +23,7 @@ function fixture(outputId = "local") {
         "node-roon-api": RoonApi,
         "node-roon-api-transport": class Transport {},
         "node-roon-api-image": class Image {},
+        "node-roon-api-browse": class Browse {},
         "node-roon-api-status": Status,
         "./zones": require("../src/kalinka_plugin_roon/extension/zones"),
     };
@@ -81,4 +82,33 @@ test("artwork uses the authorized image API and disconnect prevents commands", (
     f.command({method: "control", control: "stop"});
     assert.equal(f.calls.length, 0);
     assert.match(f.messages.at(-1).error, /disconnected/);
+});
+
+test("automatic output selection and diagnostic snapshots share the live subscription", () => {
+    const f = fixture("");
+    f.command({method: "snapshot"});
+    assert.equal(f.messages.at(-1).browse_available, false);
+    assert.equal(f.messages.at(-1).revision, 1);
+    f.command({method: "select_output", output_id: "local"});
+    f.command({method: "control", control: "stop"});
+    assert.equal(f.calls[0].output.output_id, "local");
+    f.subscription("Changed", {zones_seek_changed: []});
+    assert.equal(f.messages.at(-1).revision, 2);
+    f.command({method: "snapshot"});
+    assert.equal(f.messages.at(-1).output_id, "local");
+    assert.equal(f.messages.at(-1).zones.length, 1);
+});
+
+test("browsing reports missing permission and uses an isolated session when available", () => {
+    const f = fixture();
+    f.command({method: "browse", options: {pop_all: true}});
+    assert.match(f.messages.at(-1).error, /unavailable/);
+    f.core.services.RoonApiBrowse = {browse(options, cb) {
+        assert.equal(options.hierarchy, "browse");
+        assert.equal(options.zone_or_output_id, "local");
+        assert.equal(options.multi_session_key, "kalinka-diagnostics");
+        cb(false, {list: {title: "Library"}});
+    }};
+    f.command({method: "browse", options: {pop_all: true}});
+    assert.equal(f.messages.at(-1).list.title, "Library");
 });

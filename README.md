@@ -28,9 +28,11 @@ runtime; it is not included in this repository, wheels or native packages.
 
 Bridge runs on the **Kalinka server machine**, not on a remotely selected
 Kalinka renderer. Install this plugin on the machine connected to the DAC.
-Only the selected Roon output is coordinated; leave other outputs of the
-managed Bridge disabled in Roon. Do not run a second standalone Bridge on
-the same device.
+The plugin automatically identifies enabled local ALSA outputs from the
+managed Bridge's settings. It follows the local output playing in Roon and
+defaults to the first local output, ordered by stable output ID, when idle.
+Multiple enabled outputs do not require a Kalinka setting. Do not run a second
+standalone Bridge on the same device.
 
 Kalinka intentionally keeps **one active source per server**. Starting Roon
 stops that server's current source, including playback to a remote renderer.
@@ -72,10 +74,15 @@ hold does not cover it. See
 3. In Roon **Settings → Audio**, enable the desired output on this device.
    In **Settings → Extensions**, authorize **Kalinka Roon Bridge** and pair
    it with your Roon Server.
-4. Refresh Kalinka settings and set **This device's Roon output** to that
-   output. Save/restart through Kalinka's settings flow. The choice stores the
-   stable output ID, so renaming or regrouping a zone does not change it.
-   Do this before starting playback; an unselected output cannot be coordinated.
+4. Leave **Roon output override** empty. Kalinka matches this Bridge's device
+   UUID against the authorized Roon output subscription and detects its ALSA
+   output details. Choose the playback destination in Roon's zone picker, or
+   use Transfer Zone to move existing playback. Kalinka follows the active
+   local output and retains that choice when idle. If several local outputs
+   play simultaneously, it keeps the current active choice (or picks the first
+   by ID); Kalinka displays one session. The advanced override can pin a specific
+   output. Renaming or regrouping a zone does not change its identity. Clear a
+   previously saved override to use automatic selection.
 5. Play to it from Roon. Kalinka shows Roon's now-playing state and supports
    pause, next, previous, and seek when Roon permits them. Stop or starting
    another Kalinka source sends Roon `stop`, which releases its audio device.
@@ -101,8 +108,9 @@ plugin, delete its `pairing/pairing.json`, then enable and authorize again.
 - A loading/playing event takes ownership from Kalinka's queue or another
   plugin. Queue playback, a different plugin, Stop, a renderer selection
   change, or shutdown revokes that ownership. The host waits for the plugin's
-  Roon `stop` acknowledgement before completing handover. If control fails,
-  the plugin kills its managed Bridge process group to release the DAC.
+  Roon `stop` acknowledgement **and the actual ALSA close** before completing
+  handover. If control or release fails, the plugin kills its managed Bridge
+  process group to release the DAC.
 - Roon pause and stop both issue an explicit `stop` and give playback back
   to Kalinka. Resume from Roon. Queued playing/seek events cannot immediately
   reclaim a revoked hold: a quiet state followed by new playback is required.
@@ -113,23 +121,29 @@ plugin, delete its `pairing/pairing.json`, then enable and authorize again.
   supplies now-playing text, duration, position and output identity, but not
   source codec, source sample rate, source bit depth, or Roon's full signal
   path. These are left unknown, rather than reported as bit-perfect or guessed.
-- Optionally set **ALSA output details** to the chosen DAC's
-  `/proc/asound/cardN/pcmMp/subK/hw_params`. This adds measured output rate
-  and channel count. ALSA's container width is not source bit depth. The
-  setting must refer to the device selected in Roon; there is no reliable
-  public mapping from a Roon output ID to an ALSA device.
+- The managed Bridge's local settings supply its ALSA device automatically.
+  `/proc/asound/cardN/pcmMp/subK/hw_params` supplies measured output rate and
+  channels while that Bridge owns and runs the DAC. **ALSA output details**
+  remains an optional override. ALSA container width is not source bit depth.
 - Artwork is retrieved through the authorized [Roon image API](https://github.com/RoonLabs/node-roon-api-image/blob/master/lib.js)
   and served through Kalinka's content endpoint. Credentials and Roon Server
   addresses are not exposed to the app. The cache is limited to 32 images,
   each at most 2 MiB, requested at 600×600.
 
-The transport subscription announces playback after Roon initiates it. The
-plugin does not delay Roon's device opening or retry Play. Stop the previous
-source before starting Roon; on a shared output, allow the sound server to
-release the hardware. Automatic switching can still encounter a device-busy
-error, and this integration does not guarantee seamless audio handover.
-Optional `hw_params` reads supply output information only. No dummy renderer
+Roon can attempt to open the DAC before its transport notification reaches
+Kalinka. After acquiring the playback hold, the plugin detects a fresh ALSA
+`Device or resource busy` error for this output in the managed Bridge log. It
+waits for the DAC to close and retries Play once. Ordinary pauses, an ended
+hold, and unrelated device errors do not trigger retries. Kalinka shows
+buffering until the Bridge actually runs the DAC. A short gap remains possible;
+this is automatic recovery, not a pre-play RAAT handshake. No dummy renderer
 stream is used.
+
+The UUID-to-output encoding and Bridge log format are observed implementation
+details, not public Roon contracts. Detection accepts only exact IDs advertised
+by the authorized transport API; unknown identities require the advanced
+override. See [integration details](docs/integration.md) and the
+[hardware E2E test](scripts/e2e.py).
 
 ## Development and packaging
 
@@ -168,8 +182,11 @@ Tests cover metadata, progress, artwork isolation and limits, grouping,
 transport, source takeover, late events, disconnects, process-group teardown,
 archive extraction, platform selection and disabled/unsupported-server setup.
 The companion host tests cover arbitration against simulated renderers.
-Actual Roon Server pairing, DAC handover, ARM runtime dependencies and live
-audio quality still require device testing; this is not a production validation.
+The opt-in hardware E2E test exercises a real paired Roon Server, local ALSA
+renderer and Chromium UI, including repeated source switches and output identity
+with an empty override. See [hardware acceptance](docs/integration.md#hardware-acceptance-procedure).
+Other platforms, grouped outputs and subjective audio quality need their own
+validation.
 
 See [architecture and verification](docs/integration.md) for the implementation
 contract, source references and a hardware acceptance procedure.

@@ -9,15 +9,21 @@ from collections import OrderedDict
 from kalinka_plugin_sdk.direct_playback import HoldEnded, TransportKind
 from kalinka_plugin_sdk.inputmodule import ContentInfo
 
+from .local import running_on_bridge, wait_released
 from .metadata import alsa_output, digest, playback_state
 
 log = logging.getLogger(__name__)
 
 
 class Service:
-    def __init__(self, playback, bridge, client, output_id, hw_params=""):
+    def __init__(
+        self, playback, bridge, client, output_id, hw_params="", local_outputs=None
+    ):
         self.playback, self.bridge, self.client = playback, bridge, client
         self.output_id, self.hw_params = output_id, hw_params
+        self.configured_output_id = output_id
+        self.configured_hw_params = hw_params
+        self.local_outputs = local_outputs
         self.session = None
         self.core_id = None
         self.outputs = {}
@@ -28,6 +34,11 @@ class Service:
         self.art_keys = OrderedDict()
         self.art_cache = OrderedDict()
         self._stopping = False
+        self._stop_task = None
+        self._ignore_revision = 0
+        self._retry_deadline = 0
+        self._retried = False
+        self._busy_checkpoint = local_outputs.checkpoint() if local_outputs else None
         # On startup/reconnect clear any playback from the previous lifetime.
         # A stale playing snapshot must not interrupt a newer Kalinka source.
         self._resync = True
@@ -42,9 +53,10 @@ class Service:
             if kind == "closed":
                 raise RuntimeError("Roon extension exited; reconnecting")
             if kind == "paired":
+                self._ignore_revision = 0
                 self.waiting_for_core = False
                 self.core_id = event["core_id"]
-                self.status = "Connected; select this device's Roon output in Kalinka"
+                self.status = "Connected; identifying this Bridge's local output"
                 await self.bridge.start()
             elif kind == "disconnected":
                 self.waiting_for_core = True
@@ -59,7 +71,11 @@ class Service:
                 await self.bridge.stop()
                 await self.release()
             elif kind == "zones" and event.get("core_id") == self.core_id:
-                await self.update(event.get("zones", []))
+                if (
+                    event.get("revision", self._ignore_revision + 1)
+                    > self._ignore_revision
+                ):
+                    await self.update(event.get("zones", []))
             elif (
                 kind == "heartbeat"
                 and not self.waiting_for_core
@@ -75,6 +91,44 @@ class Service:
             for zone in zones
             for output in zone.get("outputs", [])
         }
+        if self.local_outputs:
+            local = self.local_outputs.discover()
+            candidates = self.outputs.keys() & local.keys()
+            selected = self.configured_output_id
+            if not selected:
+                active = {
+                    output["output_id"]
+                    for zone in zones
+                    if zone.get("state") in ("playing", "loading")
+                    for output in zone.get("outputs", [])
+                    if output["output_id"] in candidates
+                }
+                # Roon chooses the playback destination. Follow an active local
+                # output; retain our choice when several play or all are idle.
+                # A sorted fallback is independent of discovery/event ordering.
+                preferred = active or candidates
+                selected = (
+                    self.output_id
+                    if self.output_id in preferred
+                    else min(preferred, default="")
+                )
+            if selected != self.output_id:
+                if self.session:
+                    await self.stop_audio()
+                    await self.release()
+                await self.client.request("select_output", output_id=selected)
+                log.info(
+                    "Roon output selected: %s (local candidates: %d)",
+                    selected or "none",
+                    len(candidates),
+                )
+                self.output_id = selected
+                self.previous_state = None
+                self.suppressed = False
+                self._retry_deadline = 0
+                # Preserve startup/reconnect resync, but adopt a new output
+                # chosen by playback during this connection without stopping it.
+            self.hw_params = self.configured_hw_params or local.get(self.output_id, "")
         zone = (
             next(
                 (
@@ -97,21 +151,36 @@ class Service:
                 await self.release()
             self.previous_state = None
             self.status = (
-                "Select this device's output in Kalinka"
+                "Enable a local output in Roon Settings → Audio (or choose an output in advanced settings)"
                 if not self.output_id
                 else "Selected Roon output is unavailable"
             )
             return
         state = zone.get("state")
         previous, self.previous_state = self.previous_state, state
+        if state != previous:
+            log.info(
+                "Roon state %s → %s; output=%s suppressed=%s held=%s",
+                previous,
+                state,
+                self.output_id,
+                self.suppressed,
+                self.session is not None,
+            )
         if state not in ("playing", "loading"):
+            if await self.recover_busy(zone):
+                return
             # Pause can retain ALSA in Roon. Explicit stop releases the device.
-            if self.session or (state == "paused" and previous != state):
+            if self.session or (
+                state == "paused" and previous != state and not self.suppressed
+            ):
                 await self.stop_audio()
                 await self.release()
             if state in ("paused", "stopped"):
                 self.suppressed = False
                 self._resync = False
+                if self.local_outputs:
+                    self._busy_checkpoint = self.local_outputs.checkpoint()
             self.status = "Ready as Roon endpoint"
             return
         if self._resync:
@@ -124,10 +193,16 @@ class Service:
         if not self.bridge.running:
             return
         if self.session is None:
+            self._retry_deadline = asyncio.get_running_loop().time() + 3
+            self._retried = False
             self.session = await self.playback.acquire("Roon endpoint", self)
         if not self.session.active:
             self.session = None
             return
+        group = self.bridge.process.pid if self.bridge.process else None
+        audible = running_on_bridge(self.hw_params, group)
+        if audible:
+            self._retry_deadline = 0
         key = (zone.get("now_playing") or {}).get("image_key")
         art_url = None
         if key:
@@ -139,23 +214,108 @@ class Service:
                 self.art_cache.pop(old, None)
             art_url = f"/content/roon/{asset}"
         try:
+            reported_zone = (
+                {**zone, "state": "loading"}
+                if audible is False and state == "playing"
+                else zone
+            )
             self.session.report(
-                playback_state(zone, art_url, alsa_output(self.hw_params))
+                playback_state(
+                    reported_zone,
+                    art_url,
+                    alsa_output(self.hw_params) if audible else None,
+                )
             )
         except HoldEnded:
             self.session = None
         self.status = f"Roon endpoint · {zone.get('display_name', 'Roon')} · RAAT"
 
     async def stop_audio(self):
+        if self._stop_task is None or self._stop_task.done():
+            self._stop_task = asyncio.create_task(self._stop_audio())
+        await asyncio.shield(self._stop_task)
+
+    async def _stop_audio(self):
         self._stopping = True
+        started = asyncio.get_running_loop().time()
         try:
             await self.client.request("control", control="stop")
+            group = self.bridge.process.pid if self.bridge.process else None
+            if self.hw_params and not await wait_released(
+                self.hw_params, process_group=group
+            ):
+                raise RuntimeError("Roon acknowledged Stop but ALSA did not close")
+            log.info(
+                "Roon audio released in %.3fs",
+                asyncio.get_running_loop().time() - started,
+            )
         except (RuntimeError, OSError, asyncio.TimeoutError):
-            # There is no API acknowledgement: forcibly close our own RAAT.
+            # An acknowledgement alone is not evidence of DAC release.
             log.warning("Roon stop failed; terminating managed Bridge to free audio")
             await self.bridge.stop()
         finally:
             self._stopping = False
+
+    async def recover_busy(self, zone):
+        """Retry one confirmed local ALSA collision, retaining the acquired hold."""
+        if (
+            zone.get("state") not in ("paused", "stopped")
+            or not self.local_outputs
+            or not self.session
+            or not self.session.active
+            or self.suppressed
+            or self._stopping
+            or self._retried
+            or asyncio.get_running_loop().time() > self._retry_deadline
+            or not self.local_outputs.busy_since(self._busy_checkpoint, self.output_id)
+        ):
+            return False
+        self._retried = True
+        log.warning(
+            "Roon ALSA collision during handover; waiting for DAC and retrying Play once"
+        )
+        if not await wait_released(self.hw_params):
+            return False
+        if self.suppressed or not self.session or not self.session.active:
+            return True
+        try:
+            await self.client.request("control", control="play")
+            deadline = asyncio.get_running_loop().time() + 2
+            while self.session and self.session.active and not self.suppressed:
+                snapshot = await self.client.request("snapshot")
+                self._ignore_revision = max(
+                    self._ignore_revision, snapshot.get("revision", 0)
+                )
+                current = next(
+                    (
+                        z
+                        for z in snapshot["zones"]
+                        if any(
+                            o["output_id"] == self.output_id
+                            for o in z.get("outputs", [])
+                        )
+                    ),
+                    None,
+                )
+                if (
+                    current
+                    and current.get("state") == "playing"
+                    and running_on_bridge(
+                        self.hw_params,
+                        self.bridge.process.pid if self.bridge.process else None,
+                    )
+                ):
+                    log.info("Roon handover recovered; playback restarted on local DAC")
+                    await self.update(snapshot["zones"])
+                    return True
+                if asyncio.get_running_loop().time() >= deadline:
+                    break
+                await asyncio.sleep(0.05)
+        except (RuntimeError, OSError, asyncio.TimeoutError):
+            log.warning("Roon handover retry failed", exc_info=True)
+        if self.suppressed or not self.session or not self.session.active:
+            return True
+        return False
 
     async def release(self):
         session, self.session = self.session, None
@@ -167,6 +327,8 @@ class Service:
         # ownership. Only a quiet -> playing transition can re-arm it.
         self.session = None
         self.suppressed = True
+        self._retry_deadline = 0
+        log.info("Roon handover to Kalinka: %s", reason)
         await self.stop_audio()
 
     async def on_command(self, request):
@@ -175,6 +337,8 @@ class Service:
         if request.kind is TransportKind.SEEK:
             await self.client.request("seek", seconds=(request.position_ms or 0) / 1000)
         else:
+            if request.kind is TransportKind.PAUSE:
+                self._retry_deadline = 0
             controls = {
                 TransportKind.PAUSE: "pause",
                 TransportKind.RESUME: "play",

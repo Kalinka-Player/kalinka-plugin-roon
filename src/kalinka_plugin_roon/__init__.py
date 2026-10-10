@@ -35,15 +35,15 @@ class RoonConfig(ModuleConfig):
     )
     output_id: str = Field(
         default="",
-        title="This device's Roon output",
-        description="Enable the local audio output in Roon, authorize the Kalinka extension, then select that output here. Do not select another device.",
-        json_schema_extra={"dynamic_options": True, "importance": "simple"},
+        title="Roon output override (optional)",
+        description="Leave empty to follow playback on this Bridge's local outputs automatically, using the first local output when idle. Choose an output only to pin monitoring to it or if detection is unavailable.",
+        json_schema_extra={"dynamic_options": True, "importance": "advanced"},
     )
     alsa_hw_params: str = Field(
         default="",
         title="ALSA output details (optional)",
         pattern=r"^$|^/proc/asound/card[0-9]+/pcm[0-9]+p/sub[0-9]+/hw_params$",
-        description="hw_params for the DAC selected in Roon, e.g. /proc/asound/card0/pcm0p/sub0/hw_params. Reports output rate/channels; Roon does not expose source format.",
+        description="Leave empty to detect the local DAC automatically. Override with /proc/asound/card0/pcm0p/sub0/hw_params if needed. Reports measured output rate/channels, not source format.",
     )
 
 
@@ -108,7 +108,8 @@ class KalinkaPluginRoon(InputModulePlugin):
         if path != "output_id":
             raise KeyError(path)
         return (
-            [
+            [ConfigOption(value="", label="Automatic (this Bridge)")]
+            + [
                 ConfigOption(value=key, label=name)
                 for key, name in sorted(self.service.outputs.items())
             ]
