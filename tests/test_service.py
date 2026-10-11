@@ -4,6 +4,7 @@ from unittest.mock import AsyncMock, Mock, call
 
 import pytest
 from kalinka_plugin_sdk.direct_playback import (
+    HoldEnded,
     RevokeReason,
     TransportKind,
     TransportRequest,
@@ -35,7 +36,7 @@ async def service():
     playback = Mock(acquire=AsyncMock(return_value=session))
     bridge = Mock(running=True, process=None, start=AsyncMock(), stop=AsyncMock())
     client = Mock(
-        request=AsyncMock(),
+        request=AsyncMock(return_value={}),
         start=AsyncMock(),
         close=AsyncMock(),
         events=asyncio.Queue(),
@@ -61,6 +62,28 @@ async def test_playback_metadata_progress_and_artwork(service):
     await service.update([zone(seek_position=16)])
     assert service.session.report.call_args.args[0].position == 16000
     assert service.playback.acquire.await_count == 1
+
+
+async def test_volume_follows_selected_output_and_remains_available_paused(service):
+    service._volume_supported = True
+    z = zone()
+    z["outputs"].insert(0, {"output_id": "remote", "volume": {"value": 99}})
+    z["outputs"][1]["volume"] = dict(type="number", min=0, max=100, value=30, step=1)
+    await service.update([z])
+    service.playback.acquire.assert_awaited_once_with(
+        "Roon endpoint", service, volume_control=service
+    )
+    assert service.session.report_volume.call_args.args[0].current_volume == 30
+    await service.update([{**z, "state": "paused"}])
+    await service.set_volume(25)
+    service.client.request.assert_awaited_with(
+        "volume", value=25, output_id="local", unmute=False
+    )
+    session = service.session
+    await service.on_revoked(RevokeReason.QUEUE_PLAY)
+    with pytest.raises(HoldEnded, match="no longer owns"):
+        await service.set_volume(80)
+    assert session.report_volume.call_args.args[0].current_volume == 30
 
 
 async def test_ignores_other_devices_and_follows_regrouped_output(service):
@@ -90,6 +113,19 @@ async def test_failed_stop_kills_bridge_before_callback_returns(service):
     service.client.request.side_effect = asyncio.TimeoutError
     await service.on_revoked(RevokeReason.QUEUE_PLAY)
     service.bridge.stop.assert_awaited_once()
+
+
+async def test_failed_stop_of_local_core_does_not_kill_core_and_close_still_cleans_up(
+    service,
+):
+    await service.update([zone()])
+    service.bridge.managed = False
+    service.client.request.side_effect = asyncio.TimeoutError
+    with pytest.raises(RuntimeError, match="did not confirm"):
+        await service.on_revoked(RevokeReason.QUEUE_PLAY)
+    service.bridge.stop.assert_not_called()
+    await service.close()
+    service.client.close.assert_awaited_once()
 
 
 @pytest.mark.parametrize(
@@ -156,19 +192,73 @@ async def test_stop_acknowledgement_waits_for_actual_dac_release(service, tmp_pa
     assert service.client.request.await_count == 1
 
 
-@pytest.mark.parametrize("state", ["paused", "stopped"])
-async def test_remote_stop_or_pause_sends_stop_releases_and_does_not_loop(
-    service, state
-):
+async def test_remote_stop_sends_stop_releases_and_does_not_loop(service):
     await service.update([zone()])
     session = service.session
-    await service.update([zone(state)])
+    await service.update([zone("stopped")])
     service.client.request.assert_awaited_once_with(
         "control", control="stop", timeout=2.0
     )
     session.release.assert_awaited_once()
-    await service.update([zone(state)])
+    await service.update([zone("stopped")])
     assert service.client.request.await_count == 1
+
+
+async def test_pause_keeps_exclusive_session_and_resume_targets_roon(service):
+    await service.update([zone()])
+    session = service.session
+    await service.on_command(TransportRequest(TransportKind.PAUSE))
+    await service.update([zone("paused")])
+    assert service.session is session
+    assert session.report.call_args.args[0].state.value == "PAUSED"
+    session.release.assert_not_called()
+    service.client.request.assert_awaited_once_with("control", control="pause")
+    await service.on_command(TransportRequest(TransportKind.RESUME))
+    service.client.request.assert_awaited_with("control", control="play")
+    await service.update([zone()])
+    assert service.session is session
+    assert service.playback.acquire.await_count == 1
+
+
+async def test_paused_snapshot_without_ownership_does_not_take_over(service):
+    await service.update([zone("paused")])
+    service.client.request.assert_not_called()
+    service.playback.acquire.assert_not_called()
+
+
+async def test_explicit_source_switch_from_paused_stops_and_releases(service):
+    await service.update([zone()])
+    await service.update([zone("paused")])
+    await service.on_revoked(RevokeReason.QUEUE_PLAY)
+    service.client.request.assert_has_awaits(
+        [call("control", control="stop", timeout=2.0), call("snapshot", timeout=0.2)]
+    )
+    assert service.session is None
+    await service.update([zone("paused")])
+    service.playback.acquire.assert_awaited_once()
+
+
+async def test_stop_while_paused_rearms_from_snapshot_without_new_pause_event(service):
+    await service.update([zone()])
+    await service.update([zone("paused")])
+    service.client.request.return_value = {"zones": [zone("paused")], "revision": 12}
+    await service.on_revoked(RevokeReason.TAKEN_BACK)
+    assert service.session is None
+    assert not service.suppressed
+    report = service.playback.acquire.return_value.report
+    report.reset_mock()
+    service.client.events.put_nowait(
+        {"event": "zones", "core_id": "core", "revision": 11, "zones": [zone()]}
+    )
+    service.client.events.put_nowait(
+        {"event": "zones", "core_id": "core", "revision": 13, "zones": [zone()]}
+    )
+    service.client.events.put_nowait({"event": "closed"})
+    with pytest.raises(RuntimeError, match="exited"):
+        await service.run()
+    assert service.playback.acquire.await_count == 2
+    report.assert_called_once()
+    assert service.session.report.call_args.args[0].state.value == "PLAYING"
 
 
 async def test_output_removed_stops_before_release(service):
@@ -404,8 +494,11 @@ async def test_confirmed_busy_handover_retries_once_without_releasing_hold(
     service.client.request.side_effect = None
     params.write_text("closed\n")
     await service.update([zone("paused")])
-    service.client.request.assert_awaited_with("control", control="stop", timeout=2.0)
-    session.release.assert_awaited_once()
+    assert service.session is session
+    session.release.assert_not_called()
+    assert [
+        c.kwargs.get("control") for c in service.client.request.await_args_list
+    ].count("play") == 1
 
 
 async def test_pause_without_busy_evidence_is_never_retried(service):
@@ -415,12 +508,49 @@ async def test_pause_without_busy_evidence_is_never_retried(service):
     )
     await service.update([zone()])
     await service.update([zone("paused")])
-    service.client.request.assert_awaited_once_with(
-        "control", control="stop", timeout=2.0
+    service.client.request.assert_not_called()
+    assert service.session is not None
+
+
+async def test_busy_recovery_waits_for_slow_shared_backend_release(
+    service, tmp_path, monkeypatch
+):
+    params = tmp_path / "hw_params"
+    params.write_text("rate: 48000\n")
+    service.local_outputs = Mock(
+        discover=Mock(return_value={"local": str(params)}),
+        busy_since=Mock(return_value=True),
     )
+    audible = False
+    monkeypatch.setattr(
+        "kalinka_plugin_roon.service.running_on_bridge", lambda *args: audible
+    )
+    await service.update([zone()])
+    session = service.session
+
+    async def request(method, **kwargs):
+        nonlocal audible
+        if method == "control":
+            assert kwargs["control"] == "play"
+            assert params.read_text() == "closed\n"
+            audible = True
+            return {}
+        return {"zones": [zone()], "revision": 10}
+
+    service.client.request.side_effect = request
+    recovery = asyncio.create_task(service.update([zone("paused")]))
+    await asyncio.sleep(1.1)  # Longer than the old 0.8-second direct ALSA wait.
+    assert not recovery.done()
+    assert session.report.call_args.args[0].state.value == "BUFFERING"
+    service.client.request.assert_not_called()
+    params.write_text("closed\n")
+    await recovery
+    assert service.session is session
+    assert session.report.call_args.args[0].state.value == "PLAYING"
+    session.release.assert_not_called()
 
 
-async def test_ui_buffers_until_bridge_really_owns_running_hardware(
+async def test_transport_state_is_authoritative_when_hardware_owner_does_not_match(
     service, monkeypatch, tmp_path
 ):
     params = tmp_path / "hw_params"
@@ -430,7 +560,7 @@ async def test_ui_buffers_until_bridge_really_owns_running_hardware(
     monkeypatch.setattr("kalinka_plugin_roon.service.running_on_bridge", running)
     await service.update([zone()])
     state = service.session.report.call_args.args[0]
-    assert state.state.value == "BUFFERING"
+    assert state.state.value == "PLAYING"
     assert state.audio_info.output is None  # old local stream must not leak
     params.write_text("rate: 44100\nchannels: 2\n")
     running.return_value = True
@@ -439,6 +569,8 @@ async def test_ui_buffers_until_bridge_really_owns_running_hardware(
     assert state.state.value == "PLAYING"
     assert state.audio_info.output.sample_rate == 44100
     assert service._retry_deadline == 0
+    await service.update([zone("loading")])
+    assert service.session.report.call_args.args[0].state.value == "BUFFERING"
 
 
 async def test_revocation_while_waiting_to_retry_never_restarts(service, monkeypatch):
@@ -460,9 +592,10 @@ async def test_revocation_while_waiting_to_retry_never_restarts(service, monkeyp
     await service.on_revoked(RevokeReason.QUEUE_PLAY)
     resume.set()
     await retry
-    service.client.request.assert_awaited_once_with(
-        "control", control="stop", timeout=2.0
-    )
+    assert service.client.request.await_args_list == [
+        call("control", control="stop", timeout=2.0),
+        call("snapshot", timeout=0.2),
+    ]
     assert service.suppressed
 
 

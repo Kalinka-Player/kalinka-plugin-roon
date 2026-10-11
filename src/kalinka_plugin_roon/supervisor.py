@@ -5,7 +5,7 @@ import logging
 from .client import RoonClient
 from .install import install_bridge, install_extension
 from .local import LocalOutputs
-from .process import Bridge, run_checked
+from .process import Bridge, ServerAudio, run_checked
 from .service import Service
 
 log = logging.getLogger(__name__)
@@ -42,18 +42,36 @@ class Supervisor:
             while True:
                 try:
                     self.status = "Preparing Roon Bridge and extension"
-                    bridge_dir = await install_bridge(self.directory / "runtime")
+                    bridge = ServerAudio.find()
+                    if bridge:
+                        log.info(
+                            "Using local Roon Server audio from %s",
+                            bridge.raat_directory,
+                        )
+                        # Retire a managed instance from a previous lifetime.
+                        await Bridge(
+                            self.directory / "runtime/RoonBridge",
+                            self.directory / "data",
+                        )._stop_orphans()
+                        local = LocalOutputs(
+                            self.directory / "data",
+                            raat_directory=bridge.raat_directory,
+                        )
+                    else:
+                        bridge_dir = await install_bridge(self.directory / "runtime")
+                        await run_checked([bridge_dir / "check.sh"], cwd=bridge_dir)
+                        bridge = Bridge(bridge_dir, self.directory / "data")
+                        local = LocalOutputs(self.directory / "data")
                     extension = await install_extension(self.directory)
-                    await run_checked([bridge_dir / "check.sh"], cwd=bridge_dir)
                     self.service = Service(
                         self.playback,
-                        Bridge(bridge_dir, self.directory / "data"),
+                        bridge,
                         RoonClient(
                             extension, self.directory / "pairing", self.config.output_id
                         ),
                         self.config.output_id,
                         self.config.alsa_hw_params,
-                        LocalOutputs(self.directory / "data"),
+                        local,
                     )
                     self.error = None
                     await self.service.run()

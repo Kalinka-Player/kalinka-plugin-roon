@@ -88,6 +88,22 @@ function command(message, respond = send) {
     if (!zone) return reply("Selected Roon output is unavailable");
     // Address the saved output, so regrouping cannot target the old zone.
     const target = {output_id: outputId};
+    if (message.method === "volume") {
+        // Never redirect an in-flight slider change after automatic selection
+        // moves to another output, or change other members of a grouped zone.
+        if (message.output_id !== outputId) return reply("Selected output changed");
+        const volume = zone.outputs.find(o => o.output_id === outputId).volume;
+        if (!volume || !["number", "db"].includes(volume.type) ||
+            !Number.isFinite(message.value) || !Number.isFinite(volume.min) || !Number.isFinite(volume.max))
+            return reply("Volume is unavailable");
+        const min = Math.max(volume.min, volume.hard_limit_min ?? volume.min);
+        const max = Math.min(volume.max, volume.hard_limit_max ?? volume.max, volume.soft_limit ?? volume.max);
+        if (message.value < min || message.value > max) return reply("Volume is outside the allowed range");
+        return transport.change_volume(target, "absolute", message.value, error => {
+            if (error || !message.unmute || !volume.is_muted) return reply(error);
+            transport.mute(target, "unmute", reply);
+        });
+    }
     if (message.method === "seek") {
         if (!zone.is_seek_allowed || !Number.isFinite(message.seconds) || message.seconds < 0)
             return reply("Seek is unavailable");

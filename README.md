@@ -1,8 +1,9 @@
 # Kalinka Roon Bridge
 
 An experimental Roon endpoint plugin for [Kalinka](https://github.com/Kalinka-Player/KalinkaPlayer).
-Enabling it downloads the official Roon Bridge for this Linux machine and runs
-it as a child of Kalinka. Roon sends audio directly to the local DAC through
+It uses a local Roon Server's audio endpoint when available. Otherwise, enabling
+it downloads the official Roon Bridge and runs it as a child of Kalinka.
+Roon sends audio directly to the local DAC through
 RAAT. Kalinka displays the track, artist, album, artwork, progress and a **Roon
 endpoint** badge. Its queue stays intact while Roon plays.
 
@@ -29,10 +30,15 @@ runtime; it is not included in this repository, wheels or native packages.
 Bridge runs on the **Kalinka server machine**, not on a remotely selected
 Kalinka renderer. Install this plugin on the machine connected to the DAC.
 The plugin automatically identifies enabled local ALSA outputs from the
-managed Bridge's settings. It follows the local output playing in Roon and
+local Roon Server's or managed Bridge's settings. It follows the local output playing in Roon and
 defaults to the first local output, ordered by stable output ID, when idle.
 Multiple enabled outputs do not require a Kalinka setting. Do not run a second
 standalone Bridge on the same device.
+
+On Linux, a local Roon Server running as the same Unix user is detected from its
+RAAT process and open log file. Kalinka attaches to that endpoint and does not
+launch an additional Bridge. It controls the selected zone through Roon's API
+and leaves the Server process and library running when the plugin stops.
 
 Kalinka intentionally keeps **one active source per server**. Starting Roon
 stops that server's current source, including playback to a remote renderer.
@@ -69,12 +75,13 @@ hold does not cover it. See
    add the same setting using `sudo systemctl edit kalinka`, then run
    `sudo systemctl daemon-reload` and `sudo systemctl restart kalinka`.
 
-2. In Kalinka settings enable **Roon Bridge**. The first start downloads the
-   platform archive over HTTPS into `/var/lib/kalinka/roon/runtime/`.
+2. In Kalinka settings enable **Roon**. If no local Roon Server is detected,
+   the first start downloads the platform archive over HTTPS into
+   `/var/lib/kalinka/roon/runtime/`.
 3. In Roon **Settings → Audio**, enable the desired output on this device.
    In **Settings → Extensions**, authorize **Kalinka Roon Bridge** and pair
    it with your Roon Server.
-4. Leave **Roon output override** empty. Kalinka matches this Bridge's device
+4. Leave **Roon output override** empty. Kalinka matches the local endpoint's device
    UUID against the authorized Roon output subscription and detects its ALSA
    output details. Choose the playback destination in Roon's zone picker, or
    use Transfer Zone to move existing playback. Kalinka follows the active
@@ -91,9 +98,7 @@ If upgrading from the experimental source-control version, remove **Kalinka
 Roon Bridge** from **External Source Controls** in the output's **Device Setup**
 and restart Kalinka with the updated server and plugin. Keep the extension
 authorized under **Settings → Extensions**. The plugin no longer advertises
-source control and does not provide device-volume control. Configure volume
-using Roon's own output settings. The handover wait and diagnostic settings
-have been removed.
+source control. The handover wait and diagnostic settings have been removed.
 
 Pairing credentials are private files in `/var/lib/kalinka/roon/pairing/`.
 Disabling the plugin stops its extension and all managed Bridge processes,
@@ -101,18 +106,36 @@ but keeps the download and pairing for the next enable. Paths honor
 `KALINKA_PREFIX` for source installations. To forget a pairing, disable the
 plugin, delete its `pairing/pairing.json`, then enable and authorize again.
 
+Desktop applications such as a browser can keep the ALSA device busy through
+PipeWire. Roon may then report `DeviceOpenFailed` when enabling an output, and
+that output will not appear in the transport API. Stop the other audio before
+enabling it. Kalinka's exclusive session arbitrates its own sources; it does
+not stop unrelated desktop applications.
+
 ## Playback and audio details
 
-- Audio does not pass through Kalinka's decoder. Kalinka volume and DSP
-  settings do not configure Roon; configure Roon's device and volume in Roon.
+- On a server with external-volume support (SDK 3.11+ and matching server),
+  Kalinka's slider controls the selected Roon output while Roon owns playback,
+  including while paused. Changes made in Roon also update Kalinka. Local
+  playback restores the renderer's controls; a configured downstream amplifier
+  retains precedence. Older servers keep playback support without Roon volume.
+- Numeric and dB volume ranges are normalized to 0–100 and respect Roon's limits.
+  Fixed/increment-only outputs have no absolute slider. This controls the volume
+  configured in Roon, not every ALSA mixer: a separate attenuated Speaker control
+  can still limit loudness when Roon's Master control reads 100%.
+- Audio does not pass through Kalinka's decoder. Configure Roon's device and
+  DSP settings in Roon.
 - A loading/playing event takes ownership from Kalinka's queue or another
   plugin. Queue playback, a different plugin, Stop, a renderer selection
   change, or shutdown revokes that ownership. The host waits for the plugin's
   Roon `stop` acknowledgement **and the actual ALSA close** before completing
   handover. If control or release fails, the plugin kills its managed Bridge
   process group to release the DAC.
-- Roon pause and stop both issue an explicit `stop` and give playback back
-  to Kalinka. Resume from Roon. Queued playing/seek events cannot immediately
+  When attached to an existing Roon Server, a failed Stop is reported as an
+  error; Kalinka never terminates that Server or its other zones.
+- Pause keeps Roon's exclusive session, metadata and transport controls active.
+  Resume from Kalinka or Roon. Kalinka Stop, an explicit source switch, or a
+  Roon `stopped` state releases the hold. Queued playing/seek events cannot immediately
   reclaim a revoked hold: a quiet state followed by new playback is required.
   After restart/reconnection an already-playing snapshot is stopped first.
 - With a grouped Roon zone, transport controls affect the entire group. The
@@ -133,11 +156,24 @@ plugin, delete its `pairing/pairing.json`, then enable and authorize again.
 Roon can attempt to open the DAC before its transport notification reaches
 Kalinka. After acquiring the playback hold, the plugin detects a fresh ALSA
 `Device or resource busy` error for this output in the managed Bridge log. It
-waits for the DAC to close and retries Play once. Ordinary pauses, an ended
+waits up to six seconds for the DAC to close (including a shared backend's idle
+timeout) and retries Play once. Ordinary pauses, an ended
 hold, and unrelated device errors do not trigger retries. Kalinka shows
-buffering until the Bridge actually runs the DAC. A short gap remains possible;
+Roon's transport state; buffering is shown while Roon loads or a confirmed
+device-busy handover is being recovered. A short gap remains possible;
 this is automatic recovery, not a pre-play RAAT handshake. No dummy renderer
 stream is used.
+
+At startup, the plugin cleans up orphaned processes from its own private Bridge
+installation and data directory. This prevents a restarted launcher from
+silently reusing an old RAAT process outside its managed process group. Local
+ALSA ownership validates output measurements; it does not override Roon's
+reported playback state.
+
+The managed Bridge uses a private Roon instance name and localhost control port
+to keep its RAAT process separate from a Roon Server on the same host. Existing
+device identities are retained. Roon may require the device to be enabled again
+under the Bridge's new instance name in Settings → Audio.
 
 The UUID-to-output encoding and Bridge log format are observed implementation
 details, not public Roon contracts. Detection accepts only exact IDs advertised

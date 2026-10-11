@@ -37,6 +37,8 @@ function fixture(outputId = "local") {
             subscribe_zones(cb) { subscription = cb; },
             control(output, control, cb) { calls.push({output, control}); cb(false); },
             seek(output, how, seconds, cb) { calls.push({output, how, seconds}); cb(false); },
+            change_volume(output, how, value, cb) { calls.push({output, how, value}); cb(false); },
+            mute(output, how, cb) { calls.push({output, how}); cb(false); },
         },
         RoonApiImage: {get_image(key, options, cb) { cb(false, "image/jpeg", Buffer.from("jpeg")); }},
     }};
@@ -53,6 +55,30 @@ test("stop addresses the selected output, including in grouped zones", () => {
     assert.equal(f.calls[0].output.output_id, "local");
     assert.equal(f.calls[0].control, "stop");
     assert.equal(f.messages.at(-1).error, null);
+});
+
+test("volume addresses only the selected output and respects its limits", () => {
+    const f = fixture();
+    f.subscription("Changed", {zones_changed: [{zone_id: "group", outputs: [
+        {output_id: "remote", volume: {type: "number", min: 0, max: 100, value: 90}},
+        {output_id: "local", volume: {type: "db", min: -80, max: 0, soft_limit: -10, value: -40, is_muted: true}},
+    ]}]});
+    f.command({method: "volume", output_id: "local", value: -30, unmute: true});
+    assert.equal(f.calls[0].output.output_id, "local");
+    assert.equal(f.calls[0].value, -30);
+    assert.equal(f.calls[1].how, "unmute");
+    f.command({method: "volume", output_id: "local", value: 0});
+    assert.match(f.messages.at(-1).error, /allowed range/);
+    f.command({method: "volume", output_id: "remote", value: 20});
+    assert.match(f.messages.at(-1).error, /changed/);
+    assert.equal(f.calls.length, 2);
+});
+
+test("fixed volume never sends a volume command", () => {
+    const f = fixture();
+    f.command({method: "volume", output_id: "local", value: 30});
+    assert.match(f.messages.at(-1).error, /unavailable/);
+    assert.equal(f.calls.length, 0);
 });
 
 test("controls refuse an unconfigured or absent output", () => {
