@@ -59,9 +59,12 @@ async def wait_released(hw_params, timeout=0.8, process_group=None):
 
 
 class LocalOutputs:
-    def __init__(self, data, asound=Path("/proc/asound")):
-        self.settings = Path(data) / "RAATServer" / "Settings"
-        self.log_path = Path(data) / "RAATServer" / "Logs" / "RAATServer_log.txt"
+    def __init__(self, data, asound=Path("/proc/asound"), *, raat_directory=None):
+        directory = (
+            Path(raat_directory) if raat_directory else Path(data) / "RAATServer"
+        )
+        self.settings = directory / "Settings"
+        self.log_path = directory / "Logs" / "RAATServer_log.txt"
         self.asound = Path(asound)
         self.names = {}
 

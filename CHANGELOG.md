@@ -4,9 +4,16 @@ Curated, user-facing notes per release. Add a `## <version>` section before tagg
 
 ## Unreleased
 
+- Route Kalinka's volume slider to the selected Roon output on servers with external-volume support, including while paused; reflect Roon-side changes, honor limits and restore renderer controls when switching back to local playback.
+- Attach to an existing local Roon Server audio endpoint instead of launching a duplicate Bridge. Discover its local outputs and output measurements automatically, without taking ownership of the Server process.
+- Preserve Roon's exclusive session on pause and resume it through Kalinka; release only on Stop, source takeover or loss of the endpoint.
+- Report Roon's transport state without turning an unrecognized ALSA owner into endless buffering. Reap orphaned processes from the managed Bridge installation on startup, and isolate its RAAT process from a Roon Server running on the same host.
+- Accept new Roon playback after stopping an already-paused session, even if Roon sends no additional paused event.
+- Allow confirmed handover recovery to wait for a shared desktop backend's device-release delay, and test local PipeWire playback as well as direct ALSA.
+
 - Detect the managed Bridge's local ALSA outputs and output rate automatically; follow active local playback and use a stable first output by default, even with multiple outputs enabled. Manual selection is an advanced override.
 - Wait for actual ALSA release after Roon acknowledges Stop. Recover one confirmed device-busy collision when switching back from local playback, without retrying ordinary pauses.
-- Report buffering until the managed Bridge actually runs the DAC, and avoid showing the previous source's output format during handover.
+- Avoid showing the previous source's output format during handover.
 - Add a private diagnostic socket and a hardware/browser E2E test for repeated Roon → local file → Roon switching, metadata, artwork, progress and ALSA ownership.
 
 ## 0.1.1

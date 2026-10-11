@@ -29,14 +29,14 @@ class RoonConfig(ModuleConfig):
     )
     enabled: bool = Field(
         default=False,
-        title="Enable Roon Bridge",
-        description="Downloads and runs the official Roon Bridge. A Roon Server and subscription are required.",
+        title="Enable Roon",
+        description="Uses this machine's Roon Server audio when available; otherwise downloads and runs the official Roon Bridge. A Roon Server and subscription are required.",
         json_schema_extra={"importance": "simple"},
     )
     output_id: str = Field(
         default="",
         title="Roon output override (optional)",
-        description="Leave empty to follow playback on this Bridge's local outputs automatically, using the first local output when idle. Choose an output only to pin monitoring to it or if detection is unavailable.",
+        description="Leave empty to follow playback on this machine's local Roon outputs automatically, using the first enabled local output when idle. Choose an output only to pin monitoring to it or if detection is unavailable.",
         json_schema_extra={"dynamic_options": True, "importance": "advanced"},
     )
     alsa_hw_params: str = Field(
@@ -108,7 +108,7 @@ class KalinkaPluginRoon(InputModulePlugin):
         if path != "output_id":
             raise KeyError(path)
         return (
-            [ConfigOption(value="", label="Automatic (this Bridge)")]
+            [ConfigOption(value="", label="Automatic (this machine)")]
             + [
                 ConfigOption(value=key, label=name)
                 for key, name in sorted(self.service.outputs.items())
