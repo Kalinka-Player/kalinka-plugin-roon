@@ -45,6 +45,8 @@ class Service:
         self._resync = True
         self.waiting_for_core = False
         self._volume_supported = getattr(playback, "supports_volume", False) is True
+        self._volume_target = None
+        self._volume_task = None
 
     async def run(self):
         await self.client.start()
@@ -258,13 +260,34 @@ class Service:
     async def set_volume(self, percent):
         if not self.session or not self.session.active or self.suppressed:
             raise HoldEnded("Roon no longer owns playback")
-        current = self.output_volume()
-        await self.client.request(
-            "volume",
-            value=volume.value(current, percent),
-            output_id=self.output_id,
-            unmute=bool(current.get("is_muted")) and percent > 0,
-        )
+        volume.value(self.output_volume(), percent)
+        # Clients send every slider movement and the server forwards them one
+        # call at a time. Awaiting each Roon round trip would replay the whole
+        # drag long after release; deliver only the latest level instead.
+        self._volume_target = (self.output_id, percent)
+        if self._volume_task is None or self._volume_task.done():
+            self._volume_task = asyncio.create_task(self._send_volume())
+
+    async def _send_volume(self):
+        while self._volume_target is not None:
+            (output_id, percent), self._volume_target = self._volume_target, None
+            if not self.session or not self.session.active or self.suppressed:
+                return
+            current = self.output_volume()
+            try:
+                await self.client.request(
+                    "volume",
+                    value=volume.value(current, percent),
+                    output_id=output_id,
+                    unmute=bool(current.get("is_muted")) and percent > 0,
+                )
+            except (
+                RuntimeError,
+                OSError,
+                NotImplementedError,
+                asyncio.TimeoutError,
+            ) as error:
+                log.warning("Roon volume change failed: %s", error)
 
     async def stop_audio(self):
         if self._stop_task is None or self._stop_task.done():
@@ -382,6 +405,7 @@ class Service:
 
     async def release(self):
         session, self.session = self.session, None
+        self._volume_target = None
         if session:
             await session.release()
 
@@ -391,6 +415,7 @@ class Service:
         self.session = None
         self.suppressed = True
         self._retry_deadline = 0
+        self._volume_target = None
         log.info("Roon handover to Kalinka: %s", reason)
         await self.stop_audio()
         if self.previous_state == "paused":
