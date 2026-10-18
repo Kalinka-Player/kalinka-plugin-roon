@@ -2,6 +2,10 @@
 
 Curated, user-facing notes per release. Add a `## <version>` section before tagging — the release workflow puts the matching section into the GitHub Release body.
 
+## Unreleased
+
+- Keep Kalinka's volume slider responsive on Roon outputs: send only the latest level while a change is in flight, instead of replaying every step of a drag long after it ends.
+
 ## 0.2.0
 
 - Route Kalinka's volume slider to the selected Roon output on servers with external-volume support, including while paused; reflect Roon-side changes, honor limits and restore renderer controls when switching back to local playback.

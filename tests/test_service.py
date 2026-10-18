@@ -76,6 +76,7 @@ async def test_volume_follows_selected_output_and_remains_available_paused(servi
     assert service.session.report_volume.call_args.args[0].current_volume == 30
     await service.update([{**z, "state": "paused"}])
     await service.set_volume(25)
+    await service._volume_task
     service.client.request.assert_awaited_with(
         "volume", value=25, output_id="local", unmute=False
     )
@@ -84,6 +85,71 @@ async def test_volume_follows_selected_output_and_remains_available_paused(servi
     with pytest.raises(HoldEnded, match="no longer owns"):
         await service.set_volume(80)
     assert session.report_volume.call_args.args[0].current_volume == 30
+
+
+async def test_slider_drag_sends_only_the_latest_volume(service):
+    service._volume_supported = True
+    z = zone()
+    z["outputs"][0]["volume"] = dict(type="number", min=0, max=100, value=30, step=1)
+    await service.update([z])
+    reply = asyncio.Event()
+
+    async def request(method, **kwargs):
+        await reply.wait()
+        return {}
+
+    service.client.request = AsyncMock(side_effect=request)
+    # Each call returns without waiting for Roon, so the server's serialized
+    # calls cannot build a backlog behind slow round trips.
+    for percent in range(31, 51):
+        await asyncio.wait_for(service.set_volume(percent), 0.1)
+        await asyncio.sleep(0)
+    reply.set()
+    await service._volume_task
+    assert service.client.request.await_args_list == [
+        call("volume", value=31, output_id="local", unmute=False),
+        call("volume", value=50, output_id="local", unmute=False),
+    ]
+
+
+async def test_pending_volume_is_dropped_when_the_hold_ends(service):
+    service._volume_supported = True
+    z = zone()
+    z["outputs"][0]["volume"] = dict(type="number", min=0, max=100, value=30, step=1)
+    await service.update([z])
+    reply = asyncio.Event()
+
+    async def request(method, **kwargs):
+        if method == "volume":
+            await reply.wait()
+        return {}
+
+    service.client.request = AsyncMock(side_effect=request)
+    await service.set_volume(40)
+    await asyncio.sleep(0)
+    await service.set_volume(90)
+    await service.on_revoked(RevokeReason.QUEUE_PLAY)
+    reply.set()
+    await service._volume_task
+    volumes = [
+        c for c in service.client.request.await_args_list if c.args == ("volume",)
+    ]
+    assert volumes == [call("volume", value=40, output_id="local", unmute=False)]
+
+
+async def test_failed_volume_change_does_not_stop_later_ones(service):
+    service._volume_supported = True
+    z = zone()
+    z["outputs"][0]["volume"] = dict(type="number", min=0, max=100, value=30, step=1)
+    await service.update([z])
+    service.client.request = AsyncMock(side_effect=[RuntimeError("busy"), {}])
+    await service.set_volume(40)
+    await service._volume_task
+    await service.set_volume(45)
+    await service._volume_task
+    assert service.client.request.await_args_list[-1] == call(
+        "volume", value=45, output_id="local", unmute=False
+    )
 
 
 async def test_ignores_other_devices_and_follows_regrouped_output(service):
