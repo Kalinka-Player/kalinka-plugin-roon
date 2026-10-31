@@ -29,16 +29,17 @@ jobs:
       - uses: actions/checkout@v4
         with:
           repository: Kalinka-Player/KalinkaPlayer
-          # The oldest server release with SDK 3.7 (external playback).
-          ref: kalinka-v5.6.0
+          # SDK 3.18 artwork support: KalinkaPlayer PR #465.
+          ref: da41083ccaf011e272a009faf659fc2288c8fd0b
           path: host
+          fetch-depth: 0
       - uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python }}
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
-      - run: pip install ./host/packages/kalinka-plugin-sdk '.[dev]'
+      - run: pip install ./host/packages/kalinka-plugin-sdk ./host/packages/kalinka-server '.[dev]'
       - run: ruff check src tests
       - run: ruff format --check src tests
       - run: pytest -q

@@ -11,13 +11,16 @@ This is an independent integration, not Roon Ready certification or a Roon
 Labs product. Roon Bridge is proprietary and is downloaded from Roon Labs at
 runtime; it is not included in this repository, wheels or native packages.
 
+The monochrome Roon wordmark identifies the music source in attribution and
+plugin listings. Its origin is recorded in [NOTICE](NOTICE).
+
 ## Requirements
 
 - Linux x86-64, ARM64, or ARMv7 hard-float, with Python 3.11+.
-- Kalinka server **5.6 or newer**, which brings the **external playback API**
-  in plugin SDK **3.7+ and <4**. Installing only a newer SDK on an older
-  server is insufficient; the plugin refuses an unsupported server before
-  downloading or starting anything.
+- Kalinka server with plugin artwork support and SDK **3.18+ and <4**.
+  The server must also provide the **external playback API**; installing
+  only a newer SDK is insufficient. The plugin refuses an unsupported server
+  before downloading or starting anything.
 - Node.js 18+; npm is also needed for a source/pip install. The Debian build
   bundles the official Roon extension libraries at pinned commits, with a
   lockfile and integrity hashes. It does not require npm on the device.
@@ -205,7 +208,7 @@ is additional (about 80 MiB for the Node 22 packages on our Fedora development
 machine, varying by distribution and architecture). Native packages do not
 depend on npm. Roon Bridge's own download/runtime is separate from these sizes.
 
-CI tests against Kalinka 5.6.0, the first server release with SDK 3.7.
+CI pins a Kalinka core commit with SDK 3.18 artwork support.
 CI artifacts from `main` are untagged development builds; install releases
 instead.
 

@@ -9,7 +9,7 @@ description = "Roon Bridge endpoint and now-playing integration for Kalinka"
 readme = "README.md"
 license = "GPL-3.0-or-later"
 requires-python = ">=3.11"
-dependencies = ["kalinka-plugin-sdk>=3.7,<4", "httpx>=0.24"]
+dependencies = ["kalinka-plugin-sdk>=3.18,<4", "httpx>=0.24"]
 
 [project.optional-dependencies]
 dev = ["pytest>=8", "pytest-asyncio>=0.23", "ruff", "build", "setuptools-scm>=8"]
@@ -24,7 +24,7 @@ kalinka_plugin_roon = "kalinka_plugin_roon:KalinkaPluginRoon"
 where = ["src"]
 
 [tool.setuptools.package-data]
-kalinka_plugin_roon = ["extension/*.js", "extension/*.json"]
+kalinka_plugin_roon = ["extension/*.js", "extension/*.json", "icons/*.svg"]
 
 [tool.setuptools_scm]
 tag_regex = "^kalinka-plugin-roon-v(?P<version>\\d+\\.\\d+\\.\\d+)$"
