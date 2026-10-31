@@ -2,6 +2,11 @@
 
 Curated, user-facing notes per release. Add a `## <version>` section before tagging — the release workflow puts the matching section into the GitHub Release body.
 
+## 0.3.0
+
+- Supply a monochrome Roon wordmark, which Kalinka app 0.24.0 draws wherever it names the source, such as the attribution mark and plugin listings.
+- Needs Kalinka server 5.16 or newer, which brings plugin SDK 3.18. The package will not install on an older server.
+
 ## 0.2.0
 
 - Route Kalinka's volume slider to the selected Roon output on servers with external-volume support, including while paused; reflect Roon-side changes, honor limits and restore renderer controls when switching back to local playback.
