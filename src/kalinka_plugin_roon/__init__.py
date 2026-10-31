@@ -3,7 +3,7 @@
 from pathlib import Path
 from typing import ClassVar
 
-from kalinka_plugin_sdk import paths
+from kalinka_plugin_sdk import ModuleIconFiles, paths
 from kalinka_plugin_sdk.config_feedback import ConfigOption
 from kalinka_plugin_sdk.datamodel import EmptyList
 from kalinka_plugin_sdk.dynamic_fields import DynamicFieldDecl
@@ -19,6 +19,11 @@ from .supervisor import Supervisor
 class RoonConfig(ModuleConfig):
     __module_icon__: ClassVar[str] = "speaker_outlined"
     __module_icon_color__: ClassVar[str] = "#7565AD"
+    __module_icon_files__: ClassVar[ModuleIconFiles] = ModuleIconFiles(
+        small=Path(__file__).with_name("icons") / "roon.svg",
+        standard=Path(__file__).with_name("icons") / "roon.svg",
+        monochrome=True,
+    )
 
     name: str = Field(
         default="roon",
@@ -73,7 +78,7 @@ class RoonInput(InputModule):
 
 class KalinkaPluginRoon(InputModulePlugin):
     PLUGIN_ID = "roon"
-    REQUIRES_SDK = ">=3.7,<4"
+    REQUIRES_SDK = ">=3.18,<4"
     CONFIG_MODEL = RoonConfig
     DYNAMIC_FIELDS: ClassVar[dict[str, DynamicFieldDecl]] = {
         "connection_status": DynamicFieldDecl(

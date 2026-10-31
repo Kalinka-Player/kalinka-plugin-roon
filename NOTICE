@@ -1,0 +1,11 @@
+Roon artwork
+------------
+src/kalinka_plugin_roon/icons/roon.svg contains the plain Roon wordmark from
+the header of https://roon.app/en/press (retrieved 2026-10-31). Its paths,
+stroke and viewBox are unchanged; website attributes were removed and an
+SVG namespace and title were added.
+
+The Roon artwork and trademark belong to Roon Labs and are not covered by
+this plugin's GPL license. The wordmark identifies the playback source.
+This is an independent integration, not a Roon Labs product or a claim of
+Roon Ready, Roon Tested or other Roon certification.

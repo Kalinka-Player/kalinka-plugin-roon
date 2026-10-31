@@ -4,9 +4,9 @@ Section: sound
 Priority: optional
 Architecture: all
 Maintainer: Kalinka-Player <envelsavinds@gmail.com>
-Depends: kalinka-server, kalinka-plugin-sdk (>= 3.7), kalinka-plugin-sdk (<< 4), nodejs (>= 18), libasound2 | libasound2t64, libstdc++6, libc6, libicu76 | libicu74 | libicu72, libssl3 | libssl3t64, alsa-utils, ca-certificates, bzip2, curl
+Depends: kalinka-server, kalinka-plugin-sdk (>= 3.18), kalinka-plugin-sdk (<< 4), nodejs (>= 18), libasound2 | libasound2t64, libstdc++6, libc6, libicu76 | libicu74 | libicu72, libssl3 | libssl3t64, alsa-utils, ca-certificates, bzip2, curl
 Homepage: https://github.com/Kalinka-Player/kalinka-plugin-roon
 Description: Roon Bridge endpoint integration for Kalinka
  Downloads the official platform-specific Roon Bridge on enable and displays
  Roon now-playing information with coordinated source switching.
- Requires Kalinka server 5.6 or newer (plugin SDK 3.7 external playback API).
+ Requires plugin SDK 3.18 or newer and Kalinka external playback support.

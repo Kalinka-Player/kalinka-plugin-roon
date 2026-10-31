@@ -29,6 +29,6 @@ sed "s/@VERSION@/$version/g" debian/control.in > "$pkg/DEBIAN/control"
 cp debian/triggers "$pkg/DEBIAN/"
 install -m 755 debian/prerm debian/postinst debian/postrm "$pkg/DEBIAN/"
 install -m 644 debian/roon-audio.conf "$pkg/usr/lib/systemd/system/kalinka.service.d/roon-audio.conf"
-install -m 644 README.md LICENSE THIRD_PARTY.md "$pkg/usr/share/doc/kalinka-plugin-roon/"
+install -m 644 README.md LICENSE NOTICE THIRD_PARTY.md "$pkg/usr/share/doc/kalinka-plugin-roon/"
 mkdir -p dist
 dpkg-deb --root-owner-group -Zxz --build "$pkg" "dist/kalinka-plugin-roon_${version}_all.deb"
